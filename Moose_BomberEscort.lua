@@ -194,8 +194,8 @@ BOMBER_PROFILE.DB = {
     HasDefensiveGuns = false,
     FormationTight = false,
     EvasionCapability = "High",
-    EscortRequired = BOMBER_ESCORT_CONFIG.RequireEscort, -- Can operate independently
-    MinEscorts = 1,  -- Minimum escort fighters required
+    EscortRequired = false, -- Can operate independently
+    MinEscorts = 0,  -- Minimum escort fighters required
     MaxEscortDistance = 20000,
     ThreatTolerance = "High",
   },
@@ -821,6 +821,7 @@ function BOMBER_ESCORT_MONITOR:New(bomber)
   self.PreviousEscortCount = 0  -- Track previous count to detect changes
   self.LastEscortTime = timer.getTime()
   self.UnescortedDuration = 0
+  self.EverHadEscort = false  -- Track if we've ever detected escorts (prevents abort timer during initial join-up)
   
   -- Configuration from bomber profile
   local profile = bomber.Profile
@@ -942,6 +943,21 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
   self.EscortUnits = escortsFound
   self.EscortCount = self:_CountConfirmedEscorts(escortsFound)
   
+  -- During TAKING_OFF/CLIMBING phases, also count PROBABLE escorts for abort timer reset (escorts catching up)
+  local probableCount = 0
+  if self.Bomber:Is(BOMBER.States.TAKING_OFF) or self.Bomber:Is(BOMBER.States.CLIMBING) then
+    for unitName, data in pairs(escortsFound) do
+      if data.Classification == "probable" then
+        probableCount = probableCount + 1
+      end
+    end
+    if probableCount > 0 then
+      local phase = self.Bomber:Is(BOMBER.States.TAKING_OFF) and "TAKING_OFF" or "CLIMBING"
+      BASE:I(string.format("%s: %s phase - %d confirmed + %d probable escorts (probable resets abort timer)", 
+        self.Bomber.Callsign, phase, self.EscortCount, probableCount))
+    end
+  end
+  
   -- Only track escort roster changes if bomber is airborne (prevents spam during taxi)
   local bomberAirborne = false
   if self.Bomber.Group then
@@ -982,9 +998,21 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
   end
   
   -- Update escort status (only if escort is required)
-  if self.EscortCount >= self.MinEscorts and self.EscortCount > 0 then
+  -- During TAKING_OFF/CLIMBING, count both CONFIRMED + PROBABLE escorts to prevent premature abort while escort catches up
+  local effectiveEscortCount = self.EscortCount
+  if (self.Bomber:Is(BOMBER.States.TAKING_OFF) or self.Bomber:Is(BOMBER.States.CLIMBING)) and probableCount > 0 then
+    effectiveEscortCount = self.EscortCount + probableCount
+  end
+  
+  if effectiveEscortCount >= self.MinEscorts and effectiveEscortCount > 0 then
     self.LastEscortTime = currentTime
     self.UnescortedDuration = 0
+    
+    -- Only set EverHadEscort flag if bomber is airborne (prevents ground detections from starting timer)
+    if bomberAirborne and not self.EverHadEscort then
+      self.EverHadEscort = true  -- Mark that we've had escorts while airborne
+      BASE:I(string.format("%s: Airborne escort detected - abort timer now active", self.Bomber.Callsign))
+    end
     
     if not self.Bomber.HasEscort then
       -- Special case: If bomber is RTB/ABORTING, require close proximity (500m) to resume
@@ -1028,14 +1056,20 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     end
     self.PreviousEscortCount = self.EscortCount
   else
-    self.UnescortedDuration = currentTime - self.LastEscortTime
-    
-    -- Determine if escorts were lost or just never had enough
-    local hadSufficientEscorts = (self.PreviousEscortCount >= self.MinEscorts)
-    
-    -- Always call with updated duration to allow progressive warnings/abort
-    if self.UnescortedDuration > 0 then
-      self.Bomber:OnEscortLost(self.UnescortedDuration, self.EscortCount, hadSufficientEscorts)
+    -- Only start abort timer if we've had escorts before (prevents abort during initial join-up)
+    if self.EverHadEscort then
+      self.UnescortedDuration = currentTime - self.LastEscortTime
+      
+      -- Determine if escorts were lost or just never had enough
+      local hadSufficientEscorts = (self.PreviousEscortCount >= self.MinEscorts)
+      
+      -- Always call with updated duration to allow progressive warnings/abort
+      if self.UnescortedDuration > 0 then
+        self.Bomber:OnEscortLost(self.UnescortedDuration, self.EscortCount, hadSufficientEscorts)
+      end
+    else
+      -- Haven't had escorts yet - waiting for initial join-up, no warnings
+      BASE:I(string.format("%s: Waiting for escort to join (no timer yet)", self.Bomber.Callsign))
     end
     
     self.PreviousEscortCount = self.EscortCount
@@ -1161,19 +1195,48 @@ function BOMBER_ESCORT_MONITOR:_ClassifyEscort(escortUnit, distance)
   }
   
   -- Classification logic with config thresholds
-  -- During CLIMBING phase, double all distance thresholds to allow formation assembly
+  -- During TAKING_OFF/CLIMBING phases, use strict matching for join-up verification
+  -- After that, simplify to distance-only (escorts need freedom to maneuver during mission)
   local rangeMultiplier = 1.0
-  if self.Bomber:Is(BOMBER.States.CLIMBING) then
-    rangeMultiplier = 2.0
-    BASE:I(string.format("%s: CLIMBING phase - using 2x escort detection ranges", self.Bomber.Callsign))
+  local headingMultiplier = 1.0
+  local altMultiplier = 1.0
+  local speedMultiplier = 1.0
+  local distanceOnlyMode = false  -- Flag for simplified distance-only classification
+  
+  -- Calculate flight size scaling factor (more bombers = more spacing needed)
+  local flightSize = self.Bomber.FlightSize or 1
+  local flightSizeScale = 1.0 + (flightSize - 1) * 0.5  -- +50% per additional bomber
+  
+  if self.Bomber:Is(BOMBER.States.TAKING_OFF) then
+    -- During takeoff - very lenient for initial departure coordination
+    rangeMultiplier = 4.0 * flightSizeScale      -- 4x base (40km single, 60km for 2, 80km for 3, 100km for 4)
+    headingMultiplier = 4.0                       -- 4x heading tolerance (180° - any direction during departure)
+    altMultiplier = 3.0 * flightSizeScale         -- 3x base altitude tolerance (scales with flight size)
+    speedMultiplier = 3.0 * flightSizeScale       -- 3x base speed tolerance (scales with flight size)
+    BASE:I(string.format("%s: TAKING_OFF phase (flight:%d, scale:%.1fx) - very relaxed escort detection (range:%.1fx=%.0fkm, hdg:%.1fx, alt:%.1fx, spd:%.1fx)", 
+      self.Bomber.Callsign, flightSize, flightSizeScale, rangeMultiplier, rangeMultiplier * 10, headingMultiplier, altMultiplier, speedMultiplier))
+  elseif self.Bomber:Is(BOMBER.States.CLIMBING) then
+    -- During climb - relaxed for formation assembly
+    rangeMultiplier = 3.5 * flightSizeScale      -- 3.5x base (35km single, 52.5km for 2, 70km for 3, 87.5km for 4)
+    headingMultiplier = 3.0                       -- 3x heading tolerance (135° - escorts can approach from behind)
+    altMultiplier = 2.5 * flightSizeScale         -- 2.5x base altitude tolerance (scales with flight size)
+    speedMultiplier = 2.5 * flightSizeScale       -- 2.5x base speed tolerance (scales with flight size)
+    BASE:I(string.format("%s: CLIMBING phase (flight:%d, scale:%.1fx) - relaxed escort detection (range:%.1fx=%.0fkm, hdg:%.1fx, alt:%.1fx, spd:%.1fx)", 
+      self.Bomber.Callsign, flightSize, flightSizeScale, rangeMultiplier, rangeMultiplier * 10, headingMultiplier, altMultiplier, speedMultiplier))
+  else
+    -- CRUISE and beyond - distance-only mode (escorts need tactical freedom)
+    distanceOnlyMode = true
+    rangeMultiplier = 2.0  -- 20km max range
+    BASE:I(string.format("%s: CRUISE+ phase - distance-only escort detection (range: %.0fkm, no heading/alt/speed checks)", 
+      self.Bomber.Callsign, rangeMultiplier * 10))
   end
   
   local closeRange = BOMBER_ESCORT_CONFIG.EscortCloseRange * rangeMultiplier
   local mediumRange = BOMBER_ESCORT_CONFIG.EscortMediumRange * rangeMultiplier
   local maxRange = BOMBER_ESCORT_CONFIG.EscortMaxRange * rangeMultiplier
-  local headingTol = BOMBER_ESCORT_CONFIG.EscortHeadingTolerance
-  local altTol = BOMBER_ESCORT_CONFIG.EscortAltitudeTolerance
-  local speedTol = BOMBER_ESCORT_CONFIG.EscortVelocityTolerance
+  local headingTol = BOMBER_ESCORT_CONFIG.EscortHeadingTolerance * headingMultiplier
+  local altTol = BOMBER_ESCORT_CONFIG.EscortAltitudeTolerance * altMultiplier
+  local speedTol = BOMBER_ESCORT_CONFIG.EscortVelocityTolerance * speedMultiplier
   
   -- Special case: Both on ground (altitude < 100ft) and close proximity
   -- Ground escorts don't need heading/speed matching since they're taxiing
@@ -1189,6 +1252,21 @@ function BOMBER_ESCORT_MONITOR:_ClassifyEscort(escortUnit, distance)
     return "confirmed", details
   end
   
+  -- DISTANCE-ONLY MODE (CRUISE and beyond): Escorts need tactical freedom
+  -- Simply check if within range - no heading/altitude/speed checks
+  if distanceOnlyMode then
+    if distance <= closeRange then
+      return "confirmed", details
+    elseif distance <= mediumRange then
+      return "probable", details
+    elseif distance <= maxRange then
+      return "passing", details
+    else
+      return "unrelated", details
+    end
+  end
+  
+  -- STRICT MODE (TAKING_OFF/CLIMBING): Verify escorts are actually joining up
   -- CONFIRMED: Close range with similar flight parameters (airborne)
   if distance <= closeRange and 
      headingDiff <= headingTol and 
@@ -1989,34 +2067,9 @@ function BOMBER_MISSION:_BuildRoute()
   
   table.insert(waypoints, startCoord:WaypointAirTakeOffParking())
   
-  -- Waypoint 2+: Gradual climb to cruise altitude
-  -- Create a realistic climb profile based on aircraft performance
-  -- Modern jets: ~3-4 degrees climb angle, WWII bombers: ~1-2 degrees
-  local isModern = (self.BomberType == "B-52H" or self.BomberType == "B-1B" or 
-                    self.BomberType == "Tu-95MS" or self.BomberType == "Tu-22M3")
-  local climbAngleDeg = isModern and 3.5 or 1.5  -- Degrees
-  local climbAngleRad = math.rad(climbAngleDeg)
-  
-  -- Calculate distance needed to reach cruise altitude at this angle
-  -- distance = altitude / tan(angle)
-  local climbDistanceMeters = cruiseAltMeters / math.tan(climbAngleRad)
-  
-  -- Add intermediate climb waypoints every 20km to ensure smooth climb
-  local climbStepDistance = 20000  -- 20km between waypoints
-  local numClimbSteps = math.max(1, math.floor(climbDistanceMeters / climbStepDistance))
-  
-  BASE:I(string.format("Climb profile: %.1f° angle over %.0f km in %d steps", 
-    climbAngleDeg, climbDistanceMeters/1000, numClimbSteps))
-  
-  for i = 1, numClimbSteps do
-    local stepDistance = (climbDistanceMeters / numClimbSteps) * i
-    local stepAltitude = (cruiseAltMeters / numClimbSteps) * i
-    local climbCoord = startCoord:Translate(stepDistance, 0):SetAltitude(stepAltitude)
-    table.insert(waypoints, climbCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
-    BASE:I(string.format("Climb waypoint %d: %.0f km, %.0f ft", i, stepDistance/1000, stepAltitude/0.3048))
-  end
-  
-  -- Waypoint N+: Route waypoints (BOMBER2, BOMBER3, etc.)
+  -- Waypoint 2+: Route waypoints (BOMBER2, BOMBER3, etc.)
+  -- Aircraft will climb naturally toward cruise altitude
+  -- No intermediate climb waypoints - go directly to route waypoints
   for _, waypointData in ipairs(self.RouteWaypoints) do
     -- RouteWaypoints contains {coordinate=COORDINATE, sequence=number}
     local wpCoord = waypointData.coordinate:SetAltitude(cruiseAltMeters)
@@ -3108,7 +3161,8 @@ function BOMBER:Spawn()
   else
     BASE:I(string.format("%s: Escort not required - beginning mission immediately", self.Callsign))
     self:_StartRoute()
-    self:__Takeoff(5)  -- Transition to ENROUTE state
+    -- Transition directly to ENGINE_STARTING since route is commanded
+    self:__StartEngines(2)
   end
   
   return true
@@ -3152,6 +3206,12 @@ end
 -- Also detects stuck conditions (blockage by other aircraft)
 -- @param #BOMBER self
 function BOMBER:_MonitorEngineStart()
+  -- Prevent duplicate monitors (function can be called multiple times in escort scenarios)
+  if self.EngineStartMonitor then
+    BASE:I(string.format("%s: Engine start monitor already running, skipping duplicate start", self.Callsign))
+    return
+  end
+  
   local startTime = timer.getTime()
   local movementDetectedTime = nil
   local lastMovementTime = nil
@@ -3203,17 +3263,50 @@ function BOMBER:_MonitorEngineStart()
       end
     end
     
-    -- Send status updates every 90 seconds during long startup
+    -- Send status updates every 90 seconds during long startup with variety
     if self:Is(BOMBER.States.ENGINE_STARTING) and currentTime - lastStatusTime >= 90 then
       lastStatusTime = currentTime  -- Update BEFORE sending to prevent double-send
       local elapsedMins = math.floor(elapsedTime / 60)
-      self:_BroadcastMessage(string.format("%s: Still completing startup procedures (%d min elapsed)...", 
-        self.Callsign, elapsedMins))
+      local waypointCount = self.Route and #self.Route or 0
+      
+      -- Varied startup messages (rotate for entertainment value)
+      local startupMessages = {
+        string.format("%s: Calculating climb profile for %d waypoints (%d min elapsed)...", self.Callsign, waypointCount, elapsedMins),
+        string.format("%s: Still running pre-flight checks on %d waypoints. These old birds take their sweet time! (%d min)", self.Callsign, waypointCount, elapsedMins),
+        string.format("%s: Crunching numbers for %d waypoint route. Coffee's getting cold up here... (%d min)", self.Callsign, waypointCount, elapsedMins),
+        string.format("%s: Planning route through %d waypoints. Wish Mo was this thorough with his targeting! (%d min)", self.Callsign, waypointCount, elapsedMins),
+        string.format("%s: Computing optimal climb for %d waypoints. These engines are older than my copilot! (%d min)", self.Callsign, waypointCount, elapsedMins),
+        string.format("%s: Processing flight plan - %d waypoints to calculate. Hope the autopilot remembers them all! (%d min)", self.Callsign, waypointCount, elapsedMins),
+        string.format("%s: %d waypoints to map out. At least we know WHERE we're going, unlike Mo's usual ops... (%d min)", self.Callsign, waypointCount, elapsedMins),
+        string.format("%s: Working through %d waypoint calculations. Cold start on these birds ain't quick! (%d min)", self.Callsign, waypointCount, elapsedMins),
+        string.format("%s: Flight computer chewing on %d waypoints. This thing's slower than Mo finding a target! (%d min)", self.Callsign, waypointCount, elapsedMins),
+        string.format("%s: Validating %d waypoint route profile. These bomber missions take prep - not like Mo's 'point and pray' approach! (%d min)", self.Callsign, waypointCount, elapsedMins),
+      }
+      
+      -- Select message based on elapsed time (cycles through list)
+      local messageIndex = (elapsedMins % #startupMessages) + 1
+      self:_BroadcastMessage(startupMessages[messageIndex])
+      
       BASE:I(string.format("%s: Engine start in progress - %.0f seconds, velocity: %.1f kts", 
         self.Callsign, elapsedTime, velocity))
     end
     
     -- === FSM STATE TRANSITIONS BASED ON PHYSICAL STATE ===
+    
+    -- SPAWNED → CLIMBING (catch-all for edge cases where bomber is airborne but stuck in SPAWNED)
+    -- This should rarely trigger with proper escort logic, but protects against FSM bugs
+    if self:Is(BOMBER.States.SPAWNED) and not hasTransitionedToClimbing then
+      if altitude >= 500 and velocity > 100 then  -- Clearly airborne and flying
+        BASE:E(string.format("%s: WARNING - Airborne but stuck in SPAWNED state (%.0f ft, %.0f kts) → CLIMBING (FSM bug workaround)", 
+          self.Callsign, altitude * 3.28084, velocity))
+        self:__BeginClimb(0.5)
+        hasTransitionedToClimbing = true
+        -- Skip other ground-phase transitions since we're already airborne
+        hasTransitionedToEngineStarting = true
+        hasTransitionedToTaxiing = true
+        hasTransitionedToTakeoff = true
+      end
+    end
     
     -- HOLDING → ENGINE_STARTING (when route commanded and engines starting)
     if self:Is(BOMBER.States.HOLDING) and self.EngineStartTime and not hasTransitionedToEngineStarting then
@@ -3249,12 +3342,31 @@ function BOMBER:_MonitorEngineStart()
       end
     end
     
-    -- Start escort monitoring once we're above 2000ft (if required and not already started)
+    -- Start escort monitoring once we're above 500ft (if required and not already started)
+    -- Early monitoring during takeoff/climb allows tracking escorts from departure
     -- More lenient thresholds during CLIMBING allow formation assembly
-    if self.Profile.EscortRequired and altitude >= 610 then  -- 2000ft in meters
+    -- For multi-ship flights, wait until all aircraft are airborne to avoid false alarms during staggered takeoff
+    if self.Profile.EscortRequired and altitude >= 152 then  -- 500ft in meters (start much earlier)
       if self.EscortMonitor and not self.EscortMonitor.SchedulerID then
-        BASE:I(string.format("%s: Above 2000ft - starting escort monitoring", self.Callsign))
-        self.EscortMonitor:Start()
+        -- Check if all units in the flight are airborne (for multi-ship flights)
+        local allAirborne = true
+        local units = self.Group:GetUnits()
+        if units and #units > 1 then
+          for _, unit in ipairs(units) do
+            if unit and unit:IsAlive() then
+              local unitAlt = unit:GetAltitude()
+              if unitAlt < 152 then  -- Any unit still below 500ft
+                allAirborne = false
+                break
+              end
+            end
+          end
+        end
+        
+        if allAirborne then
+          BASE:I(string.format("%s: All aircraft airborne (%.0f ft) - starting escort monitoring", self.Callsign, altitude * 3.28084))
+          self.EscortMonitor:Start()
+        end
       end
     end
     
@@ -3333,12 +3445,27 @@ function BOMBER:_MonitorEngineStart()
     end
     
     -- Safety timeout: 15 minutes (900 seconds) for complete startup + taxi + takeoff
-    -- Don't apply timeout if already in flight phases (CLIMBING, CRUISE, PRE_ATTACK, ATTACKING, EGRESSING, ABORTING, RTB)
-    if elapsedTime > 900 and not self:Is(BOMBER.States.CLIMBING) and not self:Is(BOMBER.States.CRUISE) 
+    -- Don't apply timeout if:
+    --   1. Already in flight phases (CLIMBING, CRUISE, PRE_ATTACK, ATTACKING, EGRESSING, ABORTING, RTB)
+    --   2. Actually airborne and flying (handles air spawns or state transition issues)
+    local isActuallyAirborne = false
+    if self.Group and self.Group:IsAlive() then
+      local altitude = self.Group:GetAltitude()
+      local velocity = self.Group:GetVelocityKNOTS()
+      isActuallyAirborne = (altitude > 500 and velocity > 100)  -- Clearly airborne and flying (>500ft, >100kts)
+      if isActuallyAirborne then
+        BASE:I(string.format("%s: Actually airborne (alt=%.0fft, vel=%.0fkts) - ignoring startup timeout", 
+          self.Callsign, altitude / 0.3048, velocity))
+      end
+    end
+    
+    if elapsedTime > 900 and not isActuallyAirborne 
+       and not self:Is(BOMBER.States.CLIMBING) and not self:Is(BOMBER.States.CRUISE) 
        and not self:Is(BOMBER.States.PRE_ATTACK) and not self:Is(BOMBER.States.ATTACKING) 
        and not self:Is(BOMBER.States.EGRESSING) and not self:Is(BOMBER.States.ABORTING) 
        and not self:Is(BOMBER.States.RTB) then
-      BASE:E(string.format("%s: ERROR - Startup/departure timeout after 15 minutes", self.Callsign))
+      BASE:E(string.format("%s: ERROR - Startup/departure timeout after 15 minutes (alt=%.0fft, vel=%.0fkts, state=%s)", 
+        self.Callsign, altitude / 0.3048, velocity, self.CurrentState))
       self:_BroadcastMessage(string.format("%s: ❌ Aircraft departure failure after 15 minutes - mission scrubbed", 
         self.Callsign))
       
@@ -4550,9 +4677,10 @@ function BOMBER:_UpdateEscortRoster(currentEscorts)
     if change.from == "probable" and change.to == "confirmed" then
       self:_CrewCallout("escort_confirmed", 
         string.format("%s: %s confirmed as escort - matched course and altitude", self.Callsign, change.callsign), 60)
-    elseif change.from == "confirmed" and change.to == "probable" then
-      self:_CrewCallout("escort_drifting", 
-        string.format("%s: ⚠️ %s drifting out of formation", self.Callsign, change.callsign), 60)
+    -- Removed "drifting out of formation" announcement - too noisy during maneuvers/turns
+    -- elseif change.from == "confirmed" and change.to == "probable" then
+    --   self:_CrewCallout("escort_drifting", 
+    --     string.format("%s: ⚠️ %s drifting out of formation", self.Callsign, change.callsign), 60)
     end
   end
   
@@ -4952,6 +5080,12 @@ function BOMBER:OnEscortLost(unescortedTime, currentEscortCount, hadSufficientEs
     return
   end
   
+  -- Don't enforce escort requirements during attack run - mission committed at this point
+  if self:Is(BOMBER.States.ATTACKING) or self:Is(BOMBER.States.EGRESSING) then
+    BASE:I(string.format("%s: Escort lost during %s - continuing mission (attack committed)", self.Callsign, self.CurrentState))
+    return
+  end
+  
   local minRequired = self.Profile.MinEscorts or 1
   
   -- Different handling for insufficient vs lost escorts
@@ -5018,6 +5152,12 @@ function BOMBER:OnEscortLost(unescortedTime, currentEscortCount, hadSufficientEs
   
   -- Don't send warnings/abort if already aborting or RTB (but keep monitor running for rejoin detection)
   if self:Is(BOMBER.States.ABORTING) or self:Is(BOMBER.States.RTB) then
+    return
+  end
+  
+  -- Don't enforce escort requirements during attack run - mission committed at this point
+  if self:Is(BOMBER.States.ATTACKING) or self:Is(BOMBER.States.EGRESSING) then
+    BASE:I(string.format("%s: Escort lost during %s - continuing mission (attack committed)", self.Callsign, self.CurrentState))
     return
   end
   
@@ -5934,16 +6074,16 @@ function BOMBER:onenterAborting()
 
         local function buildApproachLeg(offsetMeters, targetAltMeters, speedMPS, label)
           local legCoord = rtbCoord:Translate(offsetMeters, approachHeading)
-          legCoord:SetAltitude(targetAltMeters, true)
+          legCoord:SetAltitude(targetAltMeters, false)  -- Use BARO/MSL for smooth altitude transitions
           local waypoint = legCoord:WaypointAirTurningPoint(nil, speedMPS)
           setWaypointSpeed(waypoint, speedMPS)
           table.insert(route, waypoint)
           approachLegs = approachLegs + 1
-          BASE:I(string.format("%s: Added %s approach fix %.1f km out (alt %.0fft)",
+          BASE:I(string.format("%s: Added %s approach fix %.1f km out (alt %.0fft MSL)",
             self.Callsign,
             label,
             offsetMeters / 1000,
-            UTILS.MetersToFeet and UTILS.MetersToFeet(targetAltMeters - fieldAltitude) or (targetAltMeters * 3.28084)))
+            UTILS.MetersToFeet and UTILS.MetersToFeet(targetAltMeters) or (targetAltMeters * 3.28084)))
         end
 
         local distanceKm = distanceToBase and (distanceToBase / 1000) or 0
