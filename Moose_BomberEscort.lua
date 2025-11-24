@@ -47,9 +47,17 @@ BOMBER_ESCORT_CONFIG = {
   EscortFormationComplimentInterval = 180, -- Seconds between formation flying compliments (default: 180s = 3 minutes)
   
   -- Threat Detection
-  SAMThreatDistance = 25000,           -- Meters - SAM detection range (default: 25km)
-  FighterThreatDistance = 15000,       -- Meters - Fighter detection range (default: 15km)
+  SAMThreatDistance = 50000,           -- Meters - SAM detection range (default: 50km - extended for strategic awareness)
+  FighterThreatDistance = 75000,       -- Meters - Fighter detection range (default: 75km - extended for escort positioning time)
   ThreatCheckInterval = 10,            -- Seconds between threat scans (default: 10)
+  
+  -- Dynamic Threat Assessment
+  EnableThreatAssessment = true,       -- Enable dynamic threat-to-escort ratio checking (default: true)
+  RequireEscortParity = true,          -- Require at least 1 escort per detected fighter (default: true)
+  ThreatToleranceWithoutEscort = 0,    -- Max fighters tolerated with no escort (0 = abort on any fighter) (default: 0)
+  ThreatToleranceWithEscort = 999,     -- Max fighters tolerated when escort parity is met (999 = no limit) (default: 999)
+  ThreatAbortGracePeriod = 120,        -- Seconds to allow outnumbered situation before aborting (gives escorts time to reposition) (default: 120)
+  ThreatWarningInterval = 30,          -- Seconds between threat warning messages during grace period (default: 30)
   
   -- Runway Attack Settings
   RunwayDetectionRadius = 500,        -- Meters - Auto-detect runway if target within this distance of airbase (default: 3km)
@@ -63,7 +71,21 @@ BOMBER_ESCORT_CONFIG = {
   RTBLandingStuckDistance = 8000,      -- Meters - consider the landing leg "stuck" if farther than this from runway on final WP
   RTBLandingStuckTime = 90,            -- Seconds - time allowed to loiter on the landing leg before forcing a land task
   RTBLandingSnapshotInterval = 15,     -- Seconds - minimum interval between repeated landing debug snapshots (set lower for more spam)
-  RTBLandingDespawnDelaySeconds = 60, -- Optional - auto-despawn bomber this many seconds after a landing fallback if it still hasn't landed
+  RTBLandingDespawnDelaySeconds = 60, -- Optional - auto-despawn bomber this many seconds after a landing fallback if it still hasn't landed 
+}
+
+--- Marker configuration
+BOMBER_MARKER.Config = {
+  waypointPrefix = "BOMBER",        -- Waypoint marker prefix (BOMBER1, BOMBER2, etc.)
+  targetPrefix = "TARGET",          -- Target marker prefix (TARGET1)
+  respawnPrefix = "RESPAWN",        -- Respawn marker prefix (RESPAWN1)
+  egressPrefix = "EGRESS",          -- Egress waypoint prefix (EGRESS1, EGRESS2, etc.)
+  rtbPrefix = "RTB",                -- RTB marker prefix (RTB1)
+  deleteMarkersAfterUse = BOMBER_ESCORT_CONFIG.DeleteMarkersAfterUse,
+  minWaypoints = 1,                 -- Minimum waypoints (BOMBER1 is required)
+  maxWaypoints = 10,                -- Maximum route waypoints
+  checkInterval = BOMBER_ESCORT_CONFIG.MarkerCheckInterval,
+  AllowAirSpawnFallback = BOMBER_ESCORT_CONFIG.AllowAirSpawnFallback,
 }
 
 ---
@@ -201,6 +223,8 @@ BOMBER_PROFILE.DB = {
   },
 }
 
+
+
 --- Get bomber profile by type name
 -- @param #string bomberType The bomber type identifier
 -- @return #table The bomber profile or nil if not found
@@ -244,19 +268,7 @@ BOMBER_MARKER = {
   ClassName = "BOMBER_MARKER"
 }
 
---- Marker configuration
-BOMBER_MARKER.Config = {
-  waypointPrefix = "BOMBER",        -- Waypoint marker prefix (BOMBER1, BOMBER2, etc.)
-  targetPrefix = "TARGET",          -- Target marker prefix (TARGET1)
-  respawnPrefix = "RESPAWN",        -- Respawn marker prefix (RESPAWN1)
-  egressPrefix = "EGRESS",          -- Egress waypoint prefix (EGRESS1, EGRESS2, etc.)
-  rtbPrefix = "RTB",                -- RTB marker prefix (RTB1)
-  deleteMarkersAfterUse = BOMBER_ESCORT_CONFIG.DeleteMarkersAfterUse,
-  minWaypoints = 1,                 -- Minimum waypoints (BOMBER1 is required)
-  maxWaypoints = 10,                -- Maximum route waypoints
-  checkInterval = BOMBER_ESCORT_CONFIG.MarkerCheckInterval,
-  AllowAirSpawnFallback = BOMBER_ESCORT_CONFIG.AllowAirSpawnFallback,
-}
+
 
 --- Create new marker parser
 -- @param #BOMBER_MARKER self
@@ -2960,6 +2972,11 @@ function BOMBER:New(templateName, missionData)
   self.EscortRejoinCount = 0  -- Track how many times escorts have rejoined after leaving
   self.MaxRejoins = 3  -- Maximum number of rejoins before aborting mission
   
+  -- Threat abort timer tracking
+  self.ThreatAbortTimer = nil  -- When threat abort countdown started
+  self.LastThreatWarning = 0   -- Last time we warned about threat situation
+  self.LastThreatReason = nil  -- Last recorded threat reason (to detect changes)
+  
   -- Engine start tracking
   self.EngineStartTime = nil  -- When engines were started
   
@@ -5300,19 +5317,136 @@ function BOMBER:OnThreatDetected(threatData)
   
   -- React based on threat type and escort status with crew awareness
   if threatData.Type == BOMBER_THREAT_MANAGER.ThreatType.FIGHTER then
-    BASE:I(string.format("%s: Fighter threat analysis - HasEscort=%s", self.Callsign, tostring(self.HasEscort)))
-    
     -- Use contextual crew callout
     self:_CrewAwarenessCallout("threat_fighter")
     
-    if not self.HasEscort then
-      -- No escort, abort immediately
-      BASE:I(string.format("%s: DECISION - ABORT due to fighters without escort", self.Callsign))
-      self:_BroadcastMessage(string.format("%s: ❌ BANDITS INBOUND! No escort protection - ABORTING MISSION!", self.Callsign))
-      self:__Abort(0) -- Use FSM transition to properly abort
+    -- Get current escort count
+    local escortCount = self.EscortMonitor and self.EscortMonitor.EscortCount or 0
+    
+    -- Count active fighter threats
+    local fighterThreats = self.ThreatManager:GetActiveThreats(BOMBER_THREAT_MANAGER.ThreatType.FIGHTER)
+    local fighterCount = 0
+    for _ in pairs(fighterThreats) do
+      fighterCount = fighterCount + 1
+    end
+    
+    BASE:I(string.format("%s: Threat assessment - Fighters=%d, Escorts=%d, EscortRequired=%s, ThreatAssessment=%s", 
+      self.Callsign, fighterCount, escortCount, 
+      tostring(self.Profile.EscortRequired), tostring(BOMBER_ESCORT_CONFIG.EnableThreatAssessment)))
+    
+    -- Determine if we should abort based on threat-to-escort ratio
+    local shouldAbort = false
+    local abortReason = ""
+    
+    if BOMBER_ESCORT_CONFIG.EnableThreatAssessment then
+      -- Dynamic threat assessment enabled
+      if escortCount == 0 then
+        -- No escorts - check tolerance without escort
+        if fighterCount > BOMBER_ESCORT_CONFIG.ThreatToleranceWithoutEscort then
+          shouldAbort = true
+          abortReason = string.format("%d fighter%s detected with no escort (tolerance: %d)", 
+            fighterCount, fighterCount > 1 and "s" or "", BOMBER_ESCORT_CONFIG.ThreatToleranceWithoutEscort)
+        end
+      else
+        -- Have escorts - check if we meet parity requirements
+        if BOMBER_ESCORT_CONFIG.RequireEscortParity then
+          if fighterCount > escortCount then
+            -- Outnumbered - abort
+            shouldAbort = true
+            abortReason = string.format("outnumbered %d vs %d (need escort parity)", fighterCount, escortCount)
+          end
+        else
+          -- Parity not required - check absolute tolerance
+          if fighterCount > BOMBER_ESCORT_CONFIG.ThreatToleranceWithEscort then
+            shouldAbort = true
+            abortReason = string.format("%d fighters exceeds tolerance (%d) even with %d escort%s", 
+              fighterCount, BOMBER_ESCORT_CONFIG.ThreatToleranceWithEscort, 
+              escortCount, escortCount > 1 and "s" or "")
+          end
+        end
+      end
     else
-      BASE:I(string.format("%s: DECISION - Continue with escort protection", self.Callsign))
-      -- Crew callout already handled above
+      -- Legacy behavior - abort only if escort required and not present
+      if self.Profile.EscortRequired and not self.HasEscort then
+        shouldAbort = true
+        abortReason = "no escort protection (legacy mode)"
+      end
+    end
+    
+    -- Apply abort decision with grace period timer
+    local currentTime = timer.getTime()
+    
+    if shouldAbort and self.Profile.EscortRequired then
+      -- Threat situation exists - manage abort timer
+      if not self.ThreatAbortTimer then
+        -- Start abort countdown
+        self.ThreatAbortTimer = currentTime
+        self.LastThreatReason = abortReason
+        BASE:I(string.format("%s: THREAT ABORT COUNTDOWN STARTED: %s (grace period: %d seconds)", 
+          self.Callsign, abortReason, BOMBER_ESCORT_CONFIG.ThreatAbortGracePeriod))
+        self:_BroadcastMessage(string.format("%s: ⚠️ THREAT ASSESSMENT: %s! Aborting in %d seconds unless escorts arrive!", 
+          self.Callsign, abortReason:upper(), BOMBER_ESCORT_CONFIG.ThreatAbortGracePeriod))
+        self.LastThreatWarning = currentTime
+      else
+        -- Timer already running - check if we should warn or abort
+        local elapsedTime = currentTime - self.ThreatAbortTimer
+        local remainingTime = BOMBER_ESCORT_CONFIG.ThreatAbortGracePeriod - elapsedTime
+        
+        -- Check if threat reason changed (e.g., more fighters appeared)
+        if abortReason ~= self.LastThreatReason then
+          BASE:I(string.format("%s: THREAT SITUATION CHANGED: %s (%.0fs remaining)", 
+            self.Callsign, abortReason, remainingTime))
+          self:_BroadcastMessage(string.format("%s: ⚠️ THREAT ESCALATION: %s! %.0f seconds to abort!", 
+            self.Callsign, abortReason:upper(), remainingTime))
+          self.LastThreatReason = abortReason
+          self.LastThreatWarning = currentTime
+        end
+        
+        -- Periodic warnings during grace period
+        if (currentTime - self.LastThreatWarning) >= BOMBER_ESCORT_CONFIG.ThreatWarningInterval then
+          BASE:I(string.format("%s: THREAT ABORT WARNING: %s (%.0f seconds remaining)", 
+            self.Callsign, abortReason, remainingTime))
+          self:_BroadcastMessage(string.format("%s: ⚠️ STILL OUTNUMBERED: %s! %.0f seconds until abort!", 
+            self.Callsign, abortReason:upper(), remainingTime))
+          self.LastThreatWarning = currentTime
+        end
+        
+        -- Check if grace period expired
+        if elapsedTime >= BOMBER_ESCORT_CONFIG.ThreatAbortGracePeriod then
+          BASE:I(string.format("%s: DECISION - ABORT (grace period expired): %s", self.Callsign, abortReason))
+          self:_BroadcastMessage(string.format("%s: ❌ GRACE PERIOD EXPIRED: %s - ABORTING MISSION!", 
+            self.Callsign, abortReason:upper()))
+          self:__Abort(0)
+        end
+      end
+    elseif not self.Profile.EscortRequired then
+      -- Escort not required - clear any timer and continue
+      if self.ThreatAbortTimer then
+        self.ThreatAbortTimer = nil
+        self.LastThreatReason = nil
+      end
+      BASE:I(string.format("%s: DECISION - Continue (escort not required for this bomber type)", self.Callsign))
+      self:_BroadcastMessage(string.format("%s: ⚠️ %d FIGHTER%s DETECTED! We'll handle this ourselves - continuing mission!", 
+        self.Callsign, fighterCount, fighterCount > 1 and "S" or ""))
+    else
+      -- Threat situation resolved - cancel timer if it was running
+      if self.ThreatAbortTimer then
+        local elapsedTime = currentTime - self.ThreatAbortTimer
+        BASE:I(string.format("%s: THREAT SITUATION RESOLVED after %.0f seconds - canceling abort timer", 
+          self.Callsign, elapsedTime))
+        self:_BroadcastMessage(string.format("%s: ✓ THREAT NEUTRALIZED! %d escort%s now on station - continuing mission!", 
+          self.Callsign, escortCount, escortCount > 1 and "s" or ""))
+        self.ThreatAbortTimer = nil
+        self.LastThreatReason = nil
+      end
+      
+      BASE:I(string.format("%s: DECISION - Continue (threat level acceptable: %d fighters vs %d escorts)", 
+        self.Callsign, fighterCount, escortCount))
+      if escortCount > 0 then
+        self:_BroadcastMessage(string.format("%s: ⚠️ %d fighter%s detected - %d escort%s on station. Continuing mission!", 
+          self.Callsign, fighterCount, fighterCount > 1 and "s" or "", 
+          escortCount, escortCount > 1 and "s" or ""))
+      end
     end
   elseif threatData.Type == BOMBER_THREAT_MANAGER.ThreatType.SAM then
     -- Use contextual crew callout
