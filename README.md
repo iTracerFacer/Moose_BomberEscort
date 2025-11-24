@@ -218,9 +218,34 @@ You need template groups in your mission editor for each bomber type you want to
 
 ## F10 Player Menu Commands
 
-Once a mission is active, players can use F10 menus to interact with bombers:
+### Mission Status and Guide Menus
 
-**Main Menu**: F10 → Bomber Missions → [Callsign]
+**Always Available**: F10 → Bomber Missions
+
+| Command | Description |
+|---------|-------------|
+| 📋 Mission Status | View all active bomber missions for your coalition |
+| 📖 Quick Start Guide | In-game help with marker formats and examples |
+
+**Mission Status Shows**:
+- Active mission callsigns
+- Aircraft type and count (alive)
+- Current target
+- Mission state (Taking Off, En Route, Attacking, etc.)
+- If no missions active, shows quick start instructions
+
+**Quick Start Guide Shows**:
+- Marker format examples
+- Available aircraft types
+- Route control (BOMBER2-n, EGRESS1-n, RTB1)
+- Target types (RUNWAY, BUILDING, BRIDGE)
+- Quick reference for creating missions
+
+### Individual Bomber Commands
+
+Once a mission is active, additional menus appear:
+
+**Per-Mission Menu**: F10 → Bomber Missions → [Callsign]
 
 | Command | Description |
 |---------|-------------|
@@ -236,6 +261,22 @@ Once a mission is active, players can use F10 menus to interact with bombers:
 - Speed changes respect min/max limits
 - Abort recommendations considered based on current threats
 - Warnings trigger defensive measures
+
+### MenuManager Integration
+
+The system is compatible with **Moose_MenuManager.lua** for organized F10 menus:
+
+**With MenuManager** (multi-script missions):
+```
+F10 → Mission Options → Bomber Missions → [Commands]
+```
+
+**Without MenuManager** (standalone):
+```
+F10 → Bomber Missions → [Commands]
+```
+
+Both modes work automatically - no configuration needed.
 
 ## Phase 2 Features (COMPLETE ✅)
 

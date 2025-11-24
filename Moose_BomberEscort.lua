@@ -7,6 +7,57 @@
 -- @author F99th-TracerFacer
 -- @copyright 2025
 
+--Naming Convention:
+--
+--B-17G → Template name: BOMBER_B17G
+--B-52H → Template name: BOMBER_B52H
+--B-1B → Template name: BOMBER_B1B
+--Tu-95MS → Template name: BOMBER_TU95
+--Tu-22M3 → Template name: BOMBER_TU22
+--B-24J → Template name: BOMBER_B24J
+
+---
+-- CONFIGURATION
+-- Customize these settings to adjust system behavior
+---
+BOMBER_ESCORT_CONFIG = {
+  -- Message Settings
+  MessageDuration = 30,                -- Seconds messages display (default: 15)
+  ShowDetailedLogs = true,             -- Show detailed state change messages to players (default: true)
+  
+  -- Marker System
+  AllowAirSpawnFallback = false,       -- Allow bombers to spawn in air if not on airbase (default: false)
+  DeleteMarkersAfterUse = true,        -- Auto-remove markers after mission starts (default: true)
+  MarkerCheckInterval = 2,             -- Seconds between marker scans (default: 2)
+  
+  -- Escort Requirements
+  RequireEscort = true,                -- Bombers require player escort to proceed with mission (default: true, set false to allow solo bomber missions)
+  EscortTimeBeforeAbort = 120,         -- Seconds without escort before abort (default: 120)
+  EscortWarningTime = 30,              -- Seconds before warning about missing escort (default: 30)
+  
+  -- Escort Classification Thresholds
+  EscortCloseRange = 5000,             -- Meters - Definite escort range (default: 1km)
+  EscortMediumRange = 10000,            -- Meters - Probable escort range (default: 5km)
+  EscortMaxRange = 20000,              -- Meters - Maximum detection range (default: 20km)
+  EscortHeadingTolerance = 45,         -- Degrees - Max heading difference for confirmed escort (default: 45°)
+  EscortAltitudeTolerance = 5000,      -- Feet - Max altitude difference for confirmed escort (default: 5000ft)
+  EscortVelocityTolerance = 100,       -- Knots - Max speed difference for confirmed escort (default: 100kts)
+  EscortHistoryDuration = 30,          -- Seconds - Track escort position/heading history (default: 30s)
+  
+  -- Threat Detection
+  SAMThreatDistance = 25000,           -- Meters - SAM detection range (default: 25km)
+  FighterThreatDistance = 15000,       -- Meters - Fighter detection range (default: 15km)
+  ThreatCheckInterval = 10,            -- Seconds between threat scans (default: 10)
+  
+  -- Runway Attack Settings
+  RunwayDetectionRadius = 500,        -- Meters - Auto-detect runway if target within this distance of airbase (default: 3km)
+  RunwayApproachDistance = 40000,      -- Meters - IP distance for runway attacks (default: 40km)
+  
+  -- Default Mission Parameters (used when not specified in markers)
+  DefaultAltitude = 25000,             -- Feet (default: 25000)
+  DefaultSpeed = 350,                  -- Knots (default: 350)
+}
+
 ---
 -- BOMBER_PROFILE - Aircraft type definitions with characteristics
 -- @type BOMBER_PROFILE
@@ -29,11 +80,12 @@ BOMBER_PROFILE.DB = {
     CruiseAlt = 20000, -- feet
     MaxAlt = 28000,
     MinAlt = 5000,
+    DefaultFlightSize = 4, -- Default number of aircraft if not specified
     HasDefensiveGuns = true,
     FormationTight = true, -- Prefers tight formations
     EvasionCapability = "Low", -- Poor, Low, Medium, High
-    EscortRequired = true,
-    MinEscorts = 2,
+    EscortRequired = BOMBER_ESCORT_CONFIG.RequireEscort,  -- Use global config by default
+    MinEscorts = 1,  -- Minimum escort fighters required
     MaxEscortDistance = 8000, -- meters
     ThreatTolerance = "Medium", -- Low, Medium, High (how long they'll stay under threat)
   },
@@ -48,11 +100,12 @@ BOMBER_PROFILE.DB = {
     CruiseAlt = 18000,
     MaxAlt = 26000,
     MinAlt = 5000,
+    DefaultFlightSize = 4,
     HasDefensiveGuns = true,
     FormationTight = true,
     EvasionCapability = "Low",
-    EscortRequired = true,
-    MinEscorts = 2,
+    EscortRequired = BOMBER_ESCORT_CONFIG.RequireEscort,
+    MinEscorts = 1,  -- Minimum escort fighters required
     MaxEscortDistance = 8000,
     ThreatTolerance = "Medium",
   },
@@ -68,11 +121,12 @@ BOMBER_PROFILE.DB = {
     CruiseAlt = 35000,
     MaxAlt = 45000,
     MinAlt = 10000,
+    DefaultFlightSize = 1, -- Usually operate solo or pairs
     HasDefensiveGuns = false,
     FormationTight = false,
     EvasionCapability = "Low",
-    EscortRequired = true,
-    MinEscorts = 2,
+    EscortRequired = BOMBER_ESCORT_CONFIG.RequireEscort,
+    MinEscorts = 2,  -- Minimum escort fighters required
     MaxEscortDistance = 15000,
     ThreatTolerance = "Low", -- Will abort quickly
   },
@@ -87,11 +141,12 @@ BOMBER_PROFILE.DB = {
     CruiseAlt = 30000,
     MaxAlt = 40000,
     MinAlt = 8000,
+    DefaultFlightSize = 1,
     HasDefensiveGuns = true,
     FormationTight = false,
     EvasionCapability = "Low",
-    EscortRequired = true,
-    MinEscorts = 2,
+    EscortRequired = BOMBER_ESCORT_CONFIG.RequireEscort,
+    MinEscorts = 1,  -- Minimum escort fighters required
     MaxEscortDistance = 15000,
     ThreatTolerance = "Medium",
   },
@@ -106,11 +161,12 @@ BOMBER_PROFILE.DB = {
     CruiseAlt = 35000,
     MaxAlt = 45000,
     MinAlt = 1000,
+    DefaultFlightSize = 1,
     HasDefensiveGuns = false,
     FormationTight = false,
     EvasionCapability = "Medium",
-    EscortRequired = true,
-    MinEscorts = 2,
+    EscortRequired = BOMBER_ESCORT_CONFIG.RequireEscort,
+    MinEscorts = 1,  -- Minimum escort fighters required
     MaxEscortDistance = 20000,
     ThreatTolerance = "Low",
   },
@@ -126,11 +182,12 @@ BOMBER_PROFILE.DB = {
     CruiseAlt = 30000,
     MaxAlt = 50000,
     MinAlt = 500,
+    DefaultFlightSize = 1,
     HasDefensiveGuns = false,
     FormationTight = false,
     EvasionCapability = "High",
-    EscortRequired = false, -- Can operate independently
-    MinEscorts = 0,
+    EscortRequired = BOMBER_ESCORT_CONFIG.RequireEscort, -- Can operate independently
+    MinEscorts = 1,  -- Minimum escort fighters required
     MaxEscortDistance = 20000,
     ThreatTolerance = "High",
   },
@@ -184,10 +241,13 @@ BOMBER_MARKER.Config = {
   waypointPrefix = "BOMBER",        -- Waypoint marker prefix (BOMBER1, BOMBER2, etc.)
   targetPrefix = "TARGET",          -- Target marker prefix (TARGET1)
   respawnPrefix = "RESPAWN",        -- Respawn marker prefix (RESPAWN1)
-  deleteMarkersAfterUse = true,     -- Auto-cleanup markers after mission spawn
+  egressPrefix = "EGRESS",          -- Egress waypoint prefix (EGRESS1, EGRESS2, etc.)
+  rtbPrefix = "RTB",                -- RTB marker prefix (RTB1)
+  deleteMarkersAfterUse = BOMBER_ESCORT_CONFIG.DeleteMarkersAfterUse,
   minWaypoints = 1,                 -- Minimum waypoints (BOMBER1 is required)
   maxWaypoints = 10,                -- Maximum route waypoints
-  checkInterval = 2,                -- Seconds between marker scans
+  checkInterval = BOMBER_ESCORT_CONFIG.MarkerCheckInterval,
+  AllowAirSpawnFallback = BOMBER_ESCORT_CONFIG.AllowAirSpawnFallback,
 }
 
 --- Create new marker parser
@@ -200,51 +260,92 @@ function BOMBER_MARKER:New()
   self.LastMissionData[coalition.side.BLUE] = nil
   self.LastMissionData[coalition.side.RED] = nil
   
-  -- Start monitoring for markers
-  self:ScheduleRepeat(1, self.Config.checkInterval, nil, self._CheckMarkers, self)
+  -- Start monitoring for markers using SCHEDULER
+  self.Scheduler = SCHEDULER:New(nil, 
+    function()
+      self:_CheckMarkers()
+    end, 
+    {}, 
+    1, -- Start after 1 second
+    self.Config.checkInterval -- Repeat every checkInterval seconds
+  )
   
   return self
 end
 
 --- Parse waypoint marker text for mission parameters
--- Format: BOMBER1:[Type]:[Airbase]:[Size]:FL[Alt]:[Speed]
--- Example: BOMBER1:B-52:Nellis:4:FL250:350
+-- Format: BOMBER1:[Type]:[Size]:FL[Alt]:[Speed]
+-- Example: BOMBER1:B-52H:4:FL250:350
 -- @param #BOMBER_MARKER self
 -- @param #string markerText The text from the map marker
 -- @param #number defaultAlt Default altitude if not specified (feet)
 -- @param #number defaultSpeed Default speed if not specified (knots)
--- @return #table Parsed parameters: {type, airbase, size, altitude, speed, originalText}
+-- @return #table Parsed parameters: {type, size, altitude, speed, originalText}
 function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed)
   local result = {
     type = nil,
-    airbase = nil,
-    size = 2,
-    altitude = defaultAlt or 25000,
-    speed = defaultSpeed or 350,
+    size = nil, -- Will use profile default if not specified
+    altitude = defaultAlt or BOMBER_ESCORT_CONFIG.DefaultAltitude,
+    speed = defaultSpeed or BOMBER_ESCORT_CONFIG.DefaultSpeed,
     originalText = markerText
   }
   
   -- Split by colon delimiter
   local parts = {}
   for part in string.gmatch(markerText, "[^:]+") do
-    table.insert(parts, part)
+    table.insert(parts, (string.gsub(part, "^%s*(.-)%s*$", "%1"))) -- Trim whitespace
   end
   
   -- Parse each part (skip first part which is BOMBER1, BOMBER2, etc.)
-  if #parts >= 2 then result.type = parts[2] end
-  if #parts >= 3 then result.airbase = parts[3] end
-  if #parts >= 4 then result.size = tonumber(parts[4]) or 2 end
-  if #parts >= 5 then
+  if #parts >= 2 and parts[2] ~= "" then result.type = parts[2] end
+  if #parts >= 3 and parts[3] ~= "" then 
+    result.size = tonumber(parts[3])
+  end
+  if #parts >= 4 then
     -- Parse FL format or raw number
-    local altStr = string.upper(parts[5])
+    local altStr = string.upper(parts[4])
     local flNum = string.match(altStr, "FL(%d+)")
     if flNum then
       result.altitude = tonumber(flNum) * 100
     else
-      result.altitude = tonumber(parts[5]) or defaultAlt
+      result.altitude = tonumber(parts[4]) or defaultAlt
     end
   end
-  if #parts >= 6 then result.speed = tonumber(parts[6]) or defaultSpeed end
+  if #parts >= 5 then result.speed = tonumber(parts[5]) or defaultSpeed end
+  
+  return result
+end
+
+--- Parse target marker text for attack parameters
+-- Format: TARGET1:TYPE:HEADING
+-- Examples: 
+--   TARGET1 - Standard attack
+--   TARGET1:RUNWAY - Runway carpet bombing (auto direction)
+--   TARGET1:RUNWAY:090 - Runway from heading 090
+--   TARGET1:BRIDGE - Bridge attack
+-- @param #BOMBER_MARKER self
+-- @param #string markerText The text from the map marker
+-- @return #table Parsed parameters: {attackType, heading}
+function BOMBER_MARKER:_ParseTargetMarker(markerText)
+  local result = {
+    attackType = "AUTO", -- AUTO, RUNWAY, BRIDGE, BUILDING
+    heading = nil, -- Optional specific attack heading
+    originalText = markerText
+  }
+  
+  -- Split by colon delimiter
+  local parts = {}
+  for part in string.gmatch(markerText, "[^:]+") do
+    table.insert(parts, (string.gsub(part, "^%s*(.-)%s*$", "%1"))) -- Trim whitespace
+  end
+  
+  -- Parse parts (skip first part which is TARGET1, TARGET2, etc.)
+  if #parts >= 2 and parts[2] ~= "" then 
+    result.attackType = string.upper(parts[2])
+  end
+  if #parts >= 3 and parts[3] ~= "" then
+    result.heading = tonumber(parts[3])
+  end
   
   return result
 end
@@ -280,7 +381,9 @@ function BOMBER_MARKER:_ScanForWaypointMarkers(prefix)
             coordinate = COORDINATE:NewFromVec3(pos),
             markerId = marker.idx,
             markerText = markerText,
-            coalition = marker.coalition or coalition.side.BLUE
+            coalition = marker.coalition or coalition.side.BLUE,
+            -- Parse target-specific parameters if this is a target marker
+            targetParams = prefix == self.Config.targetPrefix and self:_ParseTargetMarker(markerText) or nil
           })
           
           table.insert(markerIds, marker.idx)
@@ -306,6 +409,12 @@ function BOMBER_MARKER:_CheckMarkers()
   
   -- Scan for target markers
   local targetWaypoints, targetMarkerIds = self:_ScanForWaypointMarkers(self.Config.targetPrefix)
+  
+  -- Scan for egress waypoint markers
+  local egressWaypoints, egressMarkerIds = self:_ScanForWaypointMarkers(self.Config.egressPrefix)
+  
+  -- Scan for RTB markers
+  local rtbWaypoints, rtbMarkerIds = self:_ScanForWaypointMarkers(self.Config.rtbPrefix)
   
   -- Scan for respawn markers
   local respawnWaypoints, respawnMarkerIds = self:_ScanForWaypointMarkers(self.Config.respawnPrefix)
@@ -353,6 +462,30 @@ function BOMBER_MARKER:_CheckMarkers()
       end
     end
     
+    for _, egressWp in ipairs(egressWaypoints) do
+      local coalitionSide = egressWp.coalition
+      
+      if missionsByCoalition[coalitionSide] then
+        if not missionsByCoalition[coalitionSide].egressWaypoints then
+          missionsByCoalition[coalitionSide].egressWaypoints = {}
+        end
+        table.insert(missionsByCoalition[coalitionSide].egressWaypoints, egressWp)
+        table.insert(missionsByCoalition[coalitionSide].allMarkerIds, egressWp.markerId)
+      end
+    end
+    
+    for _, rtbWp in ipairs(rtbWaypoints) do
+      local coalitionSide = rtbWp.coalition
+      
+      if missionsByCoalition[coalitionSide] then
+        if not missionsByCoalition[coalitionSide].rtbWaypoints then
+          missionsByCoalition[coalitionSide].rtbWaypoints = {}
+        end
+        table.insert(missionsByCoalition[coalitionSide].rtbWaypoints, rtbWp)
+        table.insert(missionsByCoalition[coalitionSide].allMarkerIds, rtbWp.markerId)
+      end
+    end
+    
     -- Execute missions for each coalition that has complete marker set
     for coalitionSide, missionData in pairs(missionsByCoalition) do
       if #missionData.bomberWaypoints > 0 and #missionData.targetWaypoints > 0 then
@@ -365,10 +498,12 @@ end
 --- Execute a bomber mission from detected markers
 -- @param #BOMBER_MARKER self
 -- @param #number coalitionSide The coalition side
--- @param #table missionData Table containing bomberWaypoints, targetWaypoints, allMarkerIds
+-- @param #table missionData Table containing bomberWaypoints, targetWaypoints, egressWaypoints, rtbWaypoints, allMarkerIds
 function BOMBER_MARKER:_ExecuteMissionFromMarkers(coalitionSide, missionData)
   local bomberWaypoints = missionData.bomberWaypoints
   local targetWaypoints = missionData.targetWaypoints
+  local egressWaypoints = missionData.egressWaypoints or {}
+  local rtbWaypoints = missionData.rtbWaypoints or {}
   
   -- Parse BOMBER1 marker for mission parameters
   local firstWp = bomberWaypoints[1]
@@ -378,9 +513,30 @@ function BOMBER_MARKER:_ExecuteMissionFromMarkers(coalitionSide, missionData)
   local bomberType = params.type or "B-52H"
   if not BOMBER_PROFILE:Get(bomberType) then
     self:_SendMessage(coalitionSide, string.format(
-      "INVALID BOMBER TYPE: %s\nAvailable types: %s", 
+      "❌ INVALID BOMBER TYPE: %s\n\nAvailable types: %s", 
       bomberType, 
       table.concat(BOMBER_PROFILE:ListTypes(), ", ")
+    ))
+    return
+  end
+  
+  -- Check if template exists in mission
+  if _BOMBER_AVAILABLE_TEMPLATES and not _BOMBER_AVAILABLE_TEMPLATES[bomberType] then
+    local templateName = string.gsub(bomberType, "[-]", "")
+    templateName = string.gsub(templateName, "MS$", "")
+    templateName = "BOMBER_" .. string.upper(templateName)
+    
+    self:_SendMessage(coalitionSide, string.format(
+      "❌ BOMBER TEMPLATE MISSING\n\n" ..
+      "Bomber Type: %s\n" ..
+      "Required Template: %s\n\n" ..
+      "MISSION MAKER: Add this to mission editor:\n" ..
+      "1. Place %s aircraft group\n" ..
+      "2. Name group: %s\n" ..
+      "3. Set Late Activation = TRUE\n" ..
+      "4. Set loadout (bombs)\n" ..
+      "5. Restart mission after adding",
+      bomberType, templateName, bomberType, templateName
     ))
     return
   end
@@ -388,25 +544,95 @@ function BOMBER_MARKER:_ExecuteMissionFromMarkers(coalitionSide, missionData)
   -- Get profile for defaults
   local profile = BOMBER_PROFILE:Get(bomberType)
   
-  -- Validate flight size
-  local flightSize = params.size or 2
+  -- Validate flight size (use profile default if not specified)
+  local flightSize = params.size or profile.DefaultFlightSize or 1
   if flightSize < 1 or flightSize > 6 then
     self:_SendMessage(coalitionSide, "INVALID FLIGHT SIZE: Must be 1-6 aircraft")
     return
   end
   
-  -- Build mission data structure
+  -- Auto-detect airbase from marker position
+  local startAirbase = nil
+  
+  -- Find nearest airbase to BOMBER1 marker
+  local nearestAirbase = firstWp.coordinate:GetClosestAirbase(Airbase.Category.AIRDROME, coalitionSide)
+  if nearestAirbase then
+    local distance = firstWp.coordinate:Get2DDistance(nearestAirbase:GetCoordinate())
+    -- Only use airbase if marker is within 5km of it
+    if distance < 5000 then
+      startAirbase = nearestAirbase:GetName()
+      BASE:I(string.format("Auto-detected airbase: %s (%.0f m from marker)", startAirbase, distance))
+    else
+      BASE:I(string.format("Marker not on airbase (%.0f m from nearest: %s)", distance, nearestAirbase:GetName()))
+      if self.Config.AllowAirSpawnFallback then
+        BASE:I("Air spawn fallback enabled - proceeding with air spawn")
+        self:_SendMessage(coalitionSide, string.format(
+          "⚠️ BOMBER1 not on airbase - using air spawn\n\n" ..
+          "Nearest: %s (%.1f km away)\n" ..
+          "Bombers will spawn in the air at marker position",
+          nearestAirbase:GetName(), 
+          distance / 1000
+        ))
+      else
+        self:_SendMessage(coalitionSide, string.format(
+          "❌ BOMBER1 marker not on airbase!\n\n" ..
+          "Nearest airbase: %s (%.1f km away)\n\n" ..
+          "Move marker onto the airbase to spawn bombers.",
+          nearestAirbase:GetName(), 
+          distance / 1000
+        ))
+        return
+      end
+    end
+  else
+    BASE:I("No friendly airbase found near marker")
+    if self.Config.AllowAirSpawnFallback then
+      BASE:I("Air spawn fallback enabled - proceeding with air spawn")
+      self:_SendMessage(coalitionSide, "⚠️ No airbase nearby - using air spawn")
+    else
+      self:_SendMessage(coalitionSide, 
+        "❌ No friendly airbase found!\n\n" ..
+        "BOMBER1 must be placed on or near an airbase."
+      )
+      return
+    end
+  end
+  
+  -- Build mission data structure with multiple targets
+  local targets = {}
+  for i, targetWp in ipairs(targetWaypoints) do
+    -- Check if target is near an airbase for location info
+    local nearAirbase = nil
+    local targetAirbase = targetWp.coordinate:GetClosestAirbase(Airbase.Category.AIRDROME)
+    if targetAirbase then
+      local distance = targetWp.coordinate:Get2DDistance(targetAirbase:GetCoordinate())
+      if distance < 5000 then -- Within 5km
+        nearAirbase = targetAirbase:GetName()
+      end
+    end
+    
+    table.insert(targets, {
+      name = targetWp.markerText,
+      coordinate = targetWp.coordinate,
+      sequence = targetWp.sequence,
+      attackType = targetWp.targetParams and targetWp.targetParams.attackType or "AUTO",
+      attackHeading = targetWp.targetParams and targetWp.targetParams.heading or nil,
+      airbaseName = nearAirbase
+    })
+  end
+  
   local missionDataStruct = {
     Coalition = coalitionSide,
-    StartAirbase = params.airbase,
+    StartAirbase = startAirbase,
     StartPos = firstWp.coordinate,
-    TargetName = targetWaypoints[1].markerText,
-    TargetPos = targetWaypoints[1].coordinate,
+    Targets = targets,
     BomberType = bomberType,
     FlightSize = flightSize,
     CruiseAlt = params.altitude,
     CruiseSpeed = params.speed,
     RouteWaypoints = {},
+    EgressWaypoints = {},
+    RTBWaypoint = nil,
   }
   
   -- Collect additional route waypoints (BOMBER2, BOMBER3, etc.)
@@ -417,16 +643,71 @@ function BOMBER_MARKER:_ExecuteMissionFromMarkers(coalitionSide, missionData)
     })
   end
   
+  -- Collect egress waypoints (EGRESS1, EGRESS2, etc.)
+  for i, egressWp in ipairs(egressWaypoints) do
+    table.insert(missionDataStruct.EgressWaypoints, {
+      coordinate = egressWp.coordinate,
+      sequence = egressWp.sequence
+    })
+  end
+  
+  -- Get RTB waypoint if provided (only use first one if multiple)
+  if #rtbWaypoints > 0 then
+    missionDataStruct.RTBWaypoint = {
+      coordinate = rtbWaypoints[1].coordinate,
+      sequence = rtbWaypoints[1].sequence
+    }
+  end
+  
   -- Spawn the bomber mission
   local success, mission = self:_SpawnBomberMission(missionDataStruct)
   
   if success then
+    local targetCount = #missionDataStruct.Targets
+    
+    -- Build target description with attack types and locations
+    local targetDescriptions = {}
+    for i, target in ipairs(missionDataStruct.Targets) do
+      local attackTypeDesc = ""
+      local locationDesc = ""
+      
+      -- Determine attack type description
+      if target.attackType == "RUNWAY" then
+        attackTypeDesc = "RUNWAY"
+      elseif target.attackType == "BRIDGE" then
+        attackTypeDesc = "BRIDGE"
+      elseif target.attackType == "BUILDING" then
+        attackTypeDesc = "BUILDING"
+      else
+        attackTypeDesc = "TARGET"
+      end
+      
+      -- Add location if known
+      if target.airbaseName then
+        locationDesc = " @ " .. target.airbaseName
+      end
+      
+      -- Add heading for runway attacks
+      if target.attackType == "RUNWAY" and target.attackHeading then
+        locationDesc = locationDesc .. string.format(" (HDG %.0f°)", target.attackHeading)
+      end
+      
+      table.insert(targetDescriptions, attackTypeDesc .. locationDesc)
+    end
+    
+    local targetInfo = ""
+    if targetCount == 1 then
+      targetInfo = targetDescriptions[1]
+    else
+      targetInfo = string.format("%d TARGETS:\n  • %s", targetCount, table.concat(targetDescriptions, "\n  • "))
+    end
+    
     self:_SendMessage(coalitionSide, string.format(
-      "BOMBER MISSION ACTIVE\nCallsign: %s\nType: %s x%d\nTarget: %s\nProvide escort immediately!",
+      "✈️ BOMBER MISSION ACTIVE ✈️\n\nCallsign: %s\nAircraft: %s x%d\nTarget: %s\n\n⚠️ PROVIDE ESCORT IMMEDIATELY!",
       mission.Callsign or "Unknown",
       missionDataStruct.BomberType,
       missionDataStruct.FlightSize,
-      missionDataStruct.TargetName or "Coordinates"
+      targetInfo
     ))
     
     -- Cleanup markers if configured
@@ -509,7 +790,7 @@ end
 -- @param #number coalitionSide The coalition side
 -- @param #string message The message text
 function BOMBER_MARKER:_SendMessage(coalitionSide, message)
-  trigger.action.outTextForCoalition(coalitionSide, "BOMBER CONTROL: " .. message, 15)
+  trigger.action.outTextForCoalition(coalitionSide, "BOMBER CONTROL: " .. message, BOMBER_ESCORT_CONFIG.MessageDuration)
 end
 
 ---
@@ -529,6 +810,7 @@ function BOMBER_ESCORT_MONITOR:New(bomber)
   self.Bomber = bomber
   self.EscortUnits = {} -- Table of escort unit names and last seen time
   self.EscortCount = 0
+  self.PreviousEscortCount = 0  -- Track previous count to detect changes
   self.LastEscortTime = timer.getTime()
   self.UnescortedDuration = 0
   
@@ -544,6 +826,10 @@ end
 --- Start monitoring for escorts
 -- @param #BOMBER_ESCORT_MONITOR self
 function BOMBER_ESCORT_MONITOR:Start()
+  -- Reset escort timing when starting monitor to avoid false "unescorted" duration
+  self.LastEscortTime = timer.getTime()
+  self.UnescortedDuration = 0
+  
   self.SchedulerID = SCHEDULER:New(nil, self._ScanForEscorts, {self}, 2, self.CheckInterval)
   return self
 end
@@ -580,43 +866,166 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     :FilterCategories("plane")
     :FilterOnce()
   
+  BASE:I(string.format("%s: Scanning for escorts within %.1f km...", self.Bomber.Callsign, self.MaxEscortDistance/1000))
+  local scannedCount = 0
+  local playerCount = 0
+  local fighterCount = 0
+  local confirmedCount = 0
+  local probableCount = 0
+  local passingCount = 0
+  
   scanSet:ForEachUnit(function(unit)
+    scannedCount = scannedCount + 1
+    local unitType = unit:GetTypeName()
+    
     -- Check if player controlled
     if unit:IsPlayer() and unit:IsAlive() then
-      local unitCoord = unit:GetCoordinate()
-      if unitCoord then
-        local distance = bomberCoord:Get2DDistance(unitCoord)
-        
-        if distance <= self.MaxEscortDistance then
-          local unitName = unit:GetName()
-          escortsFound[unitName] = {
-            Unit = unit,
-            Distance = distance,
-            Time = currentTime
-          }
+      playerCount = playerCount + 1
+      
+      -- Check if it's a fighter (not bomber, attacker, or helicopter)
+      local isFighter = self:_IsFighterType(unitType)
+      BASE:I(string.format("%s: Found player aircraft '%s' (Type: %s, IsFighter: %s)", 
+        self.Bomber.Callsign, unit:GetName(), unitType, tostring(isFighter)))
+      
+      if isFighter then
+        fighterCount = fighterCount + 1
+        local unitCoord = unit:GetCoordinate()
+        if unitCoord then
+          local distance = bomberCoord:Get2DDistance(unitCoord)
+          
+          if distance <= self.MaxEscortDistance then
+            -- Classify the escort based on tactical relationship
+            local classification, details = self:_ClassifyEscort(unit, distance)
+            
+            if classification == "confirmed" then
+              confirmedCount = confirmedCount + 1
+            elseif classification == "probable" then
+              probableCount = probableCount + 1
+            elseif classification == "passing" then
+              passingCount = passingCount + 1
+            end
+            
+            local unitName = unit:GetName()
+            escortsFound[unitName] = {
+              Unit = unit,
+              Distance = distance,
+              Time = currentTime,
+              Classification = classification,
+              Details = details
+            }
+            
+            BASE:I(string.format("%s: ESCORT DETECTED - %s at %.1f km [%s] (Hdg: %.0f°, Alt: %.0fft, Spd: %.0fkts | Diff - Hdg: %.0f°, Alt: %.0fft, Spd: %.0fkts)", 
+              self.Bomber.Callsign, unitName, distance/1000, string.upper(classification),
+              details.heading or 0, details.altitude or 0, details.speed or 0,
+              details.headingDiff or 0, details.altDiff or 0, details.speedDiff or 0))
+          else
+            BASE:I(string.format("%s: Fighter %s too far (%.1f km > %.1f km)", 
+              self.Bomber.Callsign, unit:GetName(), distance/1000, self.MaxEscortDistance/1000))
+          end
         end
       end
     end
   end)
   
-  -- Update escort tracking
-  self.EscortUnits = escortsFound
-  self.EscortCount = self:_CountEscorts(escortsFound)
+  BASE:I(string.format("%s: Escort scan complete - Total: %d, Players: %d, Fighters: %d | Confirmed: %d, Probable: %d, Passing: %d", 
+    self.Bomber.Callsign, scannedCount, playerCount, fighterCount, confirmedCount, probableCount, passingCount))
   
-  -- Update escort status
-  if self.EscortCount >= self.MinEscorts then
+  -- Update escort tracking (only count CONFIRMED escorts for mission requirements)
+  self.EscortUnits = escortsFound
+  self.EscortCount = self:_CountConfirmedEscorts(escortsFound)
+  
+  -- Only track escort roster changes if bomber is airborne (prevents spam during taxi)
+  local bomberAirborne = false
+  if self.Bomber.Group then
+    local altitude = self.Bomber.Group:GetAltitude()
+    local velocity = self.Bomber.Group:GetVelocityKNOTS()
+    bomberAirborne = (altitude > 100 and velocity > 100)  -- Clearly airborne and flying
+  end
+  
+  if bomberAirborne then
+    -- Build current escorts table for roster tracking with classification
+    local currentEscorts = {}
+    for unitName, data in pairs(escortsFound) do
+      local callsign = data.Unit:GetCallsign() or unitName
+      currentEscorts[callsign] = {
+        unit = data.Unit,
+        classification = data.Classification,
+        details = data.Details
+      }
+    end
+    
+    -- Update bomber's dynamic escort roster (with join/leave announcements)
+    self.Bomber:_UpdateEscortRoster(currentEscorts)
+  else
+    BASE:I(string.format("%s: Bomber not yet airborne - skipping escort roster updates", self.Bomber.Callsign))
+  end
+  
+  -- Check if escort is required for this bomber
+  local escortRequired = self.Bomber.Profile.EscortRequired
+  
+  if not escortRequired then
+    BASE:I(string.format("%s: Escort not required for this bomber type - operating independently", self.Bomber.Callsign))
+    return  -- Skip escort status checks if not required
+  end
+  
+  -- Update escort status (only if escort is required)
+  if self.EscortCount >= self.MinEscorts and self.EscortCount > 0 then
     self.LastEscortTime = currentTime
     self.UnescortedDuration = 0
     
     if not self.Bomber.HasEscort then
-      self.Bomber:OnEscortArrived(self.EscortCount)
+      -- Special case: If bomber is RTB/ABORTING, require close proximity (500m) to resume
+      local isReturning = self.Bomber:Is(BOMBER.States.RTB) or self.Bomber:Is(BOMBER.States.ABORTING)
+      
+      if isReturning then
+        -- Check if any escort is within 500m
+        local hasCloseEscort = false
+        local closestDistance = 999999
+        local closestCallsign = nil
+        
+        for unitName, data in pairs(escortsFound) do
+          if data.Distance < closestDistance then
+            closestDistance = data.Distance
+            closestCallsign = data.Unit:GetCallsign() or unitName
+          end
+          if data.Distance <= 500 then
+            hasCloseEscort = true
+          end
+        end
+        
+        if hasCloseEscort then
+          BASE:I(string.format("%s: RTB escort join - %s within %.0fm (required <500m)", 
+            self.Bomber.Callsign, closestCallsign, closestDistance))
+          self.Bomber:OnEscortArrived(self.EscortCount)
+        else
+          BASE:I(string.format("%s: RTB - Escort detected but too far for resume (closest: %s at %.0fm, need <500m)", 
+            self.Bomber.Callsign, closestCallsign or "none", closestDistance))
+          
+          -- Send message to players (throttled to once per 60 seconds to prevent spam)
+          if not self.Bomber.LastProximityWarningTime or (currentTime - self.Bomber.LastProximityWarningTime) >= 60 then
+            self.Bomber:_BroadcastMessage(string.format("%s: ⚠️ Escort detected at %.1f km - Close to within 500m to resume mission!", 
+              self.Bomber.Callsign, closestDistance / 1000))
+            self.Bomber.LastProximityWarningTime = currentTime
+          end
+        end
+      else
+        -- Normal operations - any escort in range is good
+        self.Bomber:OnEscortArrived(self.EscortCount)
+      end
     end
+    self.PreviousEscortCount = self.EscortCount
   else
     self.UnescortedDuration = currentTime - self.LastEscortTime
     
-    if self.Bomber.HasEscort then
-      self.Bomber:OnEscortLost(self.UnescortedDuration)
+    -- Determine if escorts were lost or just never had enough
+    local hadSufficientEscorts = (self.PreviousEscortCount >= self.MinEscorts)
+    
+    -- Always call with updated duration to allow progressive warnings/abort
+    if self.UnescortedDuration > 0 then
+      self.Bomber:OnEscortLost(self.UnescortedDuration, self.EscortCount, hadSufficientEscorts)
     end
+    
+    self.PreviousEscortCount = self.EscortCount
   end
 end
 
@@ -630,6 +1039,163 @@ function BOMBER_ESCORT_MONITOR:_CountEscorts(escorts)
     count = count + 1
   end
   return count
+end
+
+--- Count only confirmed escorts (for mission requirements)
+-- @param #BOMBER_ESCORT_MONITOR self
+-- @param #table escorts Table of escort data with classification
+-- @return #number Count of confirmed escorts
+function BOMBER_ESCORT_MONITOR:_CountConfirmedEscorts(escorts)
+  local count = 0
+  for _, data in pairs(escorts) do
+    if data.Classification == "confirmed" then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+--- Check if aircraft type is a fighter (not bomber, attacker, or helicopter)
+-- @param #BOMBER_ESCORT_MONITOR self
+-- @param #string typeName Aircraft type name
+-- @return #boolean True if fighter type
+function BOMBER_ESCORT_MONITOR:_IsFighterType(typeName)
+  if not typeName then return false end
+  
+  -- Exclude bomber types
+  local bomberTypes = {
+    ["B-1B"] = true,
+    ["B-52H"] = true,
+    ["Tu-95MS"] = true,
+    ["Tu-160"] = true,
+    ["Tu-22M3"] = true,
+  }
+  
+  -- Exclude attacker/ground attack types (A-10, Su-25, etc)
+  local attackerTypes = {
+    ["A-10A"] = true,
+    ["A-10C"] = true,
+    ["A-10C_2"] = true,
+    ["Su-25"] = true,
+    ["Su-25T"] = true,
+    ["Su-25TM"] = true,
+  }
+  
+  -- Exclude helicopters (category check should handle this but be explicit)
+  local heloTypes = {
+    ["AH-64D"] = true,
+    ["Ka-50"] = true,
+    ["Mi-24P"] = true,
+    ["Mi-8MT"] = true,
+    ["UH-1H"] = true,
+  }
+  
+  if bomberTypes[typeName] or attackerTypes[typeName] or heloTypes[typeName] then
+    return false
+  end
+  
+  -- Everything else in the plane category is considered a fighter
+  return true
+end
+
+--- Classify escort based on tactical relationship to bomber
+-- Returns: "confirmed", "probable", "passing", or "unrelated"
+-- @param #BOMBER_ESCORT_MONITOR self
+-- @param Wrapper.Unit#UNIT escortUnit The escort unit to classify
+-- @param #number distance Distance to bomber in meters
+-- @return #string Classification type
+-- @return #table Details {heading, altitude, speed, headingDiff, altDiff, speedDiff}
+function BOMBER_ESCORT_MONITOR:_ClassifyEscort(escortUnit, distance)
+  local bomberGroup = self.Bomber.Group
+  if not bomberGroup or not escortUnit then
+    return "unrelated", {}
+  end
+  
+  -- Get bomber parameters
+  local bomberCoord = bomberGroup:GetCoordinate()
+  local bomberVelocity = bomberGroup:GetVelocityKNOTS()
+  local bomberAltitude = bomberGroup:GetAltitude() * 3.28084  -- Convert m to ft
+  local bomberHeading = bomberGroup:GetHeading()
+  
+  -- Get escort parameters
+  local escortCoord = escortUnit:GetCoordinate()
+  local escortVelocity = escortUnit:GetVelocityKNOTS()
+  local escortAltitude = escortUnit:GetAltitude() * 3.28084  -- Convert m to ft
+  local escortHeading = escortUnit:GetHeading()
+  
+  if not bomberCoord or not escortCoord then
+    return "unrelated", {}
+  end
+  
+  -- Calculate differences
+  local headingDiff = math.abs(bomberHeading - escortHeading)
+  if headingDiff > 180 then
+    headingDiff = 360 - headingDiff  -- Normalize to 0-180 range
+  end
+  
+  local altDiff = math.abs(bomberAltitude - escortAltitude)
+  local speedDiff = math.abs(bomberVelocity - escortVelocity)
+  
+  -- Build details table
+  local details = {
+    heading = escortHeading,
+    altitude = escortAltitude,
+    speed = escortVelocity,
+    headingDiff = headingDiff,
+    altDiff = altDiff,
+    speedDiff = speedDiff,
+    distance = distance
+  }
+  
+  -- Classification logic with config thresholds
+  local closeRange = BOMBER_ESCORT_CONFIG.EscortCloseRange
+  local mediumRange = BOMBER_ESCORT_CONFIG.EscortMediumRange
+  local maxRange = BOMBER_ESCORT_CONFIG.EscortMaxRange
+  local headingTol = BOMBER_ESCORT_CONFIG.EscortHeadingTolerance
+  local altTol = BOMBER_ESCORT_CONFIG.EscortAltitudeTolerance
+  local speedTol = BOMBER_ESCORT_CONFIG.EscortVelocityTolerance
+  
+  -- Special case: Both on ground (altitude < 100ft) and close proximity
+  -- Ground escorts don't need heading/speed matching since they're taxiing
+  local bomberOnGround = bomberAltitude < 100
+  local escortOnGround = escortAltitude < 100
+  
+  if bomberOnGround and escortOnGround and distance <= closeRange then
+    return "confirmed", details
+  end
+  
+  -- CONFIRMED: Close range with similar flight parameters (airborne)
+  if distance <= closeRange and 
+     headingDiff <= headingTol and 
+     altDiff <= altTol and 
+     speedDiff <= speedTol then
+    return "confirmed", details
+  end
+  
+  -- PROBABLE: Medium range with mostly similar parameters (2 of 3 match)
+  if distance <= mediumRange then
+    local matches = 0
+    if headingDiff <= headingTol then matches = matches + 1 end
+    if altDiff <= altTol then matches = matches + 1 end
+    if speedDiff <= speedTol then matches = matches + 1 end
+    
+    if matches >= 2 then
+      return "probable", details
+    end
+  end
+  
+  -- PASSING: Within range but clearly not escorting
+  -- (opposite heading, significantly different speed/altitude)
+  if distance <= maxRange then
+    if headingDiff > 135 or speedDiff > speedTol * 2 or altDiff > altTol * 2 then
+      return "passing", details
+    end
+    -- If within range but doesn't fit other categories, it's probable
+    return "probable", details
+  end
+  
+  -- UNRELATED: Too far away
+  return "unrelated", details
 end
 
 --- Get current escort status
@@ -751,19 +1317,31 @@ function BOMBER_THREAT_MANAGER:_ScanThreats()
   
   fighterScan:ForEachGroup(function(group)
     if group:IsAlive() and group:InAir() then
-      local groupCoord = group:GetCoordinate()
-      if groupCoord then
-        local distance = bomberCoord:Get2DDistance(groupCoord)
-        
-        if distance <= self.FighterThreatRange then
-          local threatId = group:GetName()
-          threatsFound[threatId] = {
-            Type = BOMBER_THREAT_MANAGER.ThreatType.FIGHTER,
-            Group = group,
-            Distance = distance,
-            Bearing = self:_GetBearing(bomberCoord, groupCoord),
-            Time = currentTime
-          }
+      -- Check if this is actually a fighter/attacker, not a bomber
+      local groupType = group:GetTypeName()
+      local isBomber = groupType and (string.find(string.upper(groupType), "B-52") or 
+                                       string.find(string.upper(groupType), "B-1") or
+                                       string.find(string.upper(groupType), "TU-95") or
+                                       string.find(string.upper(groupType), "TU-22") or
+                                       string.find(string.upper(groupType), "TU-160") or
+                                       string.find(string.upper(groupType), "B-17") or
+                                       string.find(string.upper(groupType), "B-24"))
+      
+      if not isBomber then
+        local groupCoord = group:GetCoordinate()
+        if groupCoord then
+          local distance = bomberCoord:Get2DDistance(groupCoord)
+          
+          if distance <= self.FighterThreatRange then
+            local threatId = group:GetName()
+            threatsFound[threatId] = {
+              Type = BOMBER_THREAT_MANAGER.ThreatType.FIGHTER,
+              Group = group,
+              Distance = distance,
+              Bearing = self:_GetBearing(bomberCoord, groupCoord),
+              Time = currentTime
+            }
+          end
         end
       end
     end
@@ -866,8 +1444,252 @@ function BOMBER_MISSION_MANAGER:New()
   self.ActiveMissions = {}
   self.MissionCounter = 0
   self.CompletedMissions = {}
+  self.Menus = {}
+  
+  -- Create F10 menus for each coalition
+  self:_InitializeMenus()
   
   return self
+end
+
+--- Initialize F10 menus
+-- @param #BOMBER_MISSION_MANAGER self
+function BOMBER_MISSION_MANAGER:_InitializeMenus()
+  -- Check if MenuManager exists for integration
+  local useMenuManager = (MenuManager ~= nil)
+  
+  -- Create menus for both coalitions
+  for _, coalitionSide in ipairs({coalition.side.BLUE, coalition.side.RED}) do
+    local coalitionName = (coalitionSide == coalition.side.BLUE) and "BLUE" or "RED"
+    
+    -- Create parent menu
+    local parentMenu
+    if useMenuManager then
+      parentMenu = MenuManager.CreateCoalitionMenu(coalitionSide, "Bomber Missions")
+    else
+      parentMenu = MENU_COALITION:New(coalitionSide, "Bomber Missions")
+    end
+    
+    -- Store menu reference
+    self.Menus[coalitionSide] = {
+      Parent = parentMenu,
+      StatusCommand = nil,
+      GuideCommand = nil
+    }
+    
+    -- Add "Mission Status" command
+    self.Menus[coalitionSide].StatusCommand = MENU_COALITION_COMMAND:New(
+      coalitionSide,
+      "Mission Status",
+      parentMenu,
+      function()
+        self:_ShowMissionStatus(coalitionSide)
+      end
+    )
+    
+    -- Add "Player Guide" command
+    self.Menus[coalitionSide].GuideCommand = MENU_COALITION_COMMAND:New(
+      coalitionSide,
+      "Quick Start Guide",
+      parentMenu,
+      function()
+        self:_ShowPlayerGuide(coalitionSide)
+      end
+    )
+    
+    BASE:I(string.format("Bomber F10 menus created for %s coalition", coalitionName))
+  end
+end
+
+--- Show mission status for coalition
+-- @param #BOMBER_MISSION_MANAGER self
+-- @param #number coalitionSide Coalition side
+function BOMBER_MISSION_MANAGER:_ShowMissionStatus(coalitionSide)
+  local missions = self:GetActiveMissions(coalitionSide)
+  
+  if #missions == 0 then
+    -- No active missions
+    local message = "═══════════════════════════════\n" ..
+                   "📋 BOMBER MISSION STATUS\n" ..
+                   "═══════════════════════════════\n\n" ..
+                   "❌ NO ACTIVE MISSIONS\n\n" ..
+                   "To create a bomber mission:\n" ..
+                   "1. Place BOMBER1:[Type] marker on airbase\n" ..
+                   "2. Place TARGET1 marker on target\n" ..
+                   "3. Mission spawns automatically!\n\n" ..
+                   "📖 Use 'Quick Start Guide' for details\n" ..
+                   "═══════════════════════════════"
+    
+    MESSAGE:New(message, BOMBER_ESCORT_CONFIG.MessageDuration):ToCoalition(coalitionSide)
+  else
+    -- Build status for each active mission
+    local statusLines = {
+      "═══════════════════════════════",
+      "📋 BOMBER MISSION STATUS",
+      "═══════════════════════════════",
+      ""
+    }
+    
+    for i, mission in ipairs(missions) do
+      -- Get bomber group status
+      local bomberStatus = "UNKNOWN"
+      local bomberCount = "?"
+      local currentTask = "Unknown"
+      
+      if mission.Bomber and mission.Bomber.Group then
+        local group = mission.Bomber.Group
+        if group:IsAlive() then
+          bomberCount = tostring(group:CountAliveUnits())
+          bomberStatus = "ACTIVE"
+          
+          -- Use FSM state for current task display
+          local state = mission.Bomber:GetState()
+          if state == "Spawned" then
+            currentTask = "Spawned"
+          elseif state == "Holding" then
+            currentTask = "Waiting for Escort"
+          elseif state == "EngineStarting" then
+            currentTask = "Starting Engines"
+          elseif state == "Taxiing" then
+            currentTask = "Taxiing"
+          elseif state == "Blocked" then
+            currentTask = "Blocked on Taxiway"
+          elseif state == "TakingOff" then
+            currentTask = "Taking Off"
+          elseif state == "Climbing" then
+            currentTask = "Climbing to Cruise"
+          elseif state == "Cruise" then
+            currentTask = "En Route to Target"
+          elseif state == "PreAttack" then
+            currentTask = "Approaching Target"
+          elseif state == "Attacking" then
+            currentTask = "Attacking Target"
+          elseif state == "Egressing" then
+            currentTask = "Egressing"
+          elseif state == "Aborting" then
+            currentTask = "Aborting Mission"
+          elseif state == "RTB" then
+            currentTask = "Returning to Base"
+          elseif state == "Landed" then
+            currentTask = "Landed"
+          elseif state == "Destroyed" then
+            currentTask = "Destroyed"
+          else
+            currentTask = "Unknown State"
+          end
+        else
+          bomberStatus = "LOST"
+          bomberCount = "0"
+          currentTask = "Destroyed"
+        end
+      end
+      
+      -- Build target info
+      local targetInfo = ""
+      if mission.Targets and #mission.Targets > 0 then
+        if #mission.Targets == 1 then
+          local target = mission.Targets[1]
+          if target.airbaseName then
+            targetInfo = target.airbaseName
+          else
+            targetInfo = "Coordinates"
+          end
+        else
+          targetInfo = string.format("%d Targets", #mission.Targets)
+        end
+      else
+        targetInfo = "Unknown"
+      end
+      
+      -- Add mission info
+      table.insert(statusLines, string.format("✈️ MISSION %d: %s", i, mission.Callsign or "Unknown"))
+      table.insert(statusLines, string.format("   Aircraft: %s x%s", mission.BomberType or "Unknown", bomberCount))
+      table.insert(statusLines, string.format("   Target: %s", targetInfo))
+      table.insert(statusLines, string.format("   Status: %s", currentTask))
+      
+      if i < #missions then
+        table.insert(statusLines, "")
+      end
+    end
+    
+    table.insert(statusLines, "")
+    table.insert(statusLines, "═══════════════════════════════")
+    
+    local message = table.concat(statusLines, "\n")
+    MESSAGE:New(message, BOMBER_ESCORT_CONFIG.MessageDuration):ToCoalition(coalitionSide)
+  end
+end
+
+--- Show player guide for coalition
+-- @param #BOMBER_MISSION_MANAGER self
+-- @param #number coalitionSide Coalition side
+function BOMBER_MISSION_MANAGER:_ShowPlayerGuide(coalitionSide)
+  local guide = {
+    "═══════════════════════════════",
+    "📖 BOMBER MISSION QUICK START",
+    "═══════════════════════════════",
+    "",
+    "🎯 CREATING A MISSION:",
+    "",
+    "1️⃣ BOMBER1:[Type]",
+    "   Place on or near your airbase",
+    "   Example: BOMBER1:B-52H",
+    "",
+    "2️⃣ TARGET1",
+    "   Place on enemy target",
+    "   Auto-detects runways within 3km",
+    "",
+    "3️⃣ Done! Mission spawns automatically",
+    "",
+    "───────────────────────────────",
+    "📝 ADVANCED OPTIONS:",
+    "",
+    "BOMBER1:B-17G:4:FL200:180",
+    "        └─┬─┘ └┬┘ └─┬─┘ └┬┘",
+    "          │    │    │    └─ Speed (knots)",
+    "          │    │    └────── Altitude (feet)",
+    "          │    └─────────── Flight size (1-6)",
+    "          └──────────────── Aircraft type",
+    "",
+    "───────────────────────────────",
+    "🛣️ ROUTE CONTROL:",
+    "",
+    "BOMBER2, BOMBER3... = Ingress route",
+    "EGRESS1, EGRESS2... = Egress route",
+    "RTB1 = Return to base point",
+    "",
+    "───────────────────────────────",
+    "🎯 TARGET TYPES:",
+    "",
+    "TARGET1:RUNWAY:270",
+    "  → Carpet bomb runway from heading 270°",
+    "",
+    "TARGET1:BUILDING / BRIDGE",
+    "  → Point target attack",
+    "",
+    "TARGET2, TARGET3...",
+    "  → Multiple targets in sequence",
+    "",
+    "───────────────────────────────",
+    "✈️ AVAILABLE AIRCRAFT:",
+    "",
+    "WWII: B-17G, B-24J (4 aircraft default)",
+    "Modern: B-52H, B-1B (1 aircraft default)",
+    "Soviet: Tu-95, Tu-22M3",
+    "",
+    "───────────────────────────────",
+    "🔄 QUICK RESPAWN:",
+    "",
+    "RESPAWN1 = Repeat last mission",
+    "",
+    "═══════════════════════════════",
+    "For complete guide, see:",
+    "MARKER_GUIDE.md",
+    "═══════════════════════════════"
+  }
+  
+  local message = table.concat(guide, "\n")
+  MESSAGE:New(message, 30):ToCoalition(coalitionSide)
 end
 
 --- Register a new mission
@@ -934,9 +1756,10 @@ function BOMBER_MISSION:New(missionData)
   -- Mission locations
   self.StartAirbase = missionData.StartAirbase
   self.StartPos = missionData.StartPos
-  self.TargetName = missionData.TargetName
-  self.TargetPos = missionData.TargetPos
+  self.Targets = missionData.Targets or {}
   self.RouteWaypoints = missionData.RouteWaypoints or {}
+  self.EgressWaypoints = missionData.EgressWaypoints or {}
+  self.RTBWaypoint = missionData.RTBWaypoint or nil
   
   -- Mission parameters
   self.CruiseAlt = missionData.CruiseAlt
@@ -945,6 +1768,7 @@ function BOMBER_MISSION:New(missionData)
   -- Status
   self.MissionActive = false
   self.MissionSuccess = false
+  self.CurrentState = "SPAWNED"
   self.Bomber = nil
   
   -- Player menu
@@ -969,12 +1793,13 @@ function BOMBER_MISSION:Start()
     FlightSize = self.FlightSize,
     StartAirbase = self.StartAirbase,
     StartPos = self.StartPos,
-    TargetName = self.TargetName,
-    TargetPos = self.TargetPos,
+    Targets = self.Targets,
     TargetZone = self:_CreateTargetZone(),
     CruiseAlt = self.CruiseAlt,
     CruiseSpeed = self.CruiseSpeed,
     RouteWaypoints = self.RouteWaypoints,
+    EgressWaypoints = self.EgressWaypoints,
+    RTBWaypoint = self.RTBWaypoint,
     Mission = self, -- Reference back to mission
   }
   
@@ -991,7 +1816,8 @@ function BOMBER_MISSION:Start()
   -- Spawn bomber
   local success = self.Bomber:Spawn()
   if not success then
-    BASE:E("Failed to spawn bomber")
+    BASE:E(string.format("Failed to spawn bomber: %s (template: %s)", self.BomberType, templateName))
+    -- Error message already sent to players by BOMBER:Spawn()
     return false
   end
   
@@ -1015,11 +1841,15 @@ function BOMBER_MISSION:_BuildRoute()
     local airbase = AIRBASE:FindByName(self.StartAirbase)
     if airbase then
       startCoord = airbase:GetCoordinate()
+      BASE:I(string.format("Start from airbase: %s at %s", self.StartAirbase, startCoord:ToStringLLDMS()))
+    else
+      env.warning(string.format("[BOMBER] Airbase '%s' not found", self.StartAirbase))
     end
   end
   
   if not startCoord and self.StartPos then
-    startCoord = COORDINATE:New(self.StartPos.x, self.StartPos.alt or 0, self.StartPos.y)
+    startCoord = COORDINATE:NewFromVec3(self.StartPos)
+    BASE:I(string.format("Start from marker position: %s", startCoord:ToStringLLDMS()))
   end
   
   if not startCoord then
@@ -1027,16 +1857,13 @@ function BOMBER_MISSION:_BuildRoute()
     return
   end
   
-  -- Get target coordinate
-  local targetCoord
-  if self.TargetPos then
-    targetCoord = COORDINATE:New(self.TargetPos.x, self.TargetPos.alt or 0, self.TargetPos.y)
-  end
-  
-  if not targetCoord then
-    BASE:E("No valid target coordinate")
+  -- Validate we have targets
+  if not self.Targets or #self.Targets == 0 then
+    BASE:E("No valid targets")
     return
   end
+  
+  BASE:I(string.format("Mission has %d target(s)", #self.Targets))
   
   -- Build waypoint list
   local waypoints = {}
@@ -1044,57 +1871,309 @@ function BOMBER_MISSION:_BuildRoute()
   -- Waypoint 1: Start (takeoff)
   local cruiseAlt = self.CruiseAlt or profile.CruiseAlt
   local cruiseSpeed = self.CruiseSpeed or profile.CruiseSpeed
+  local cruiseAltMeters = cruiseAlt * 0.3048 -- Convert feet to meters
+  local cruiseSpeedMPS = cruiseSpeed * 0.514444 -- Convert knots to m/s
+  
+  BASE:I(string.format("Mission parameters: Altitude=%.0f ft (%.0f m), Speed=%d kts (%.1f m/s)", 
+    cruiseAlt, cruiseAltMeters, cruiseSpeed, cruiseSpeedMPS))
   
   table.insert(waypoints, startCoord:WaypointAirTakeOffParking())
   
   -- Waypoint 2: Climb to cruise altitude
-  local climbCoord = startCoord:Translate(10000, 0) -- 10km ahead
-  climbCoord:SetAltitude(cruiseAlt * 0.3048) -- Convert feet to meters
-  table.insert(waypoints, climbCoord:WaypointAirTurningPoint(nil, cruiseSpeed * 0.514444)) -- Convert knots to m/s
+  local climbCoord = startCoord:Translate(10000, 0):SetAltitude(cruiseAltMeters)
+  table.insert(waypoints, climbCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
   
-  -- Waypoint 3+: Route waypoints
-  for _, waypointPos in ipairs(self.RouteWaypoints) do
-    local wpCoord = COORDINATE:New(waypointPos.x, cruiseAlt * 0.3048, waypointPos.y)
-    table.insert(waypoints, wpCoord:WaypointAirTurningPoint(nil, cruiseSpeed * 0.514444))
+  -- Waypoint 3+: Route waypoints (BOMBER2, BOMBER3, etc.)
+  for _, waypointData in ipairs(self.RouteWaypoints) do
+    -- RouteWaypoints contains {coordinate=COORDINATE, sequence=number}
+    local wpCoord = waypointData.coordinate:SetAltitude(cruiseAltMeters)
+    table.insert(waypoints, wpCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+    BASE:I(string.format("Added route waypoint %d at altitude %.0f m", waypointData.sequence, cruiseAltMeters))
   end
   
-  -- Waypoint N-1: Target (IP - Initial Point)
-  local ipCoord = targetCoord:Translate(20000, 180) -- 20km before target
-  ipCoord:SetAltitude(cruiseAlt * 0.3048)
-  table.insert(waypoints, ipCoord:WaypointAirTurningPoint(nil, cruiseSpeed * 0.514444))
-  
-  -- Waypoint N: Target (bombing run)
-  targetCoord:SetAltitude(cruiseAlt * 0.3048)
-  local targetWP = targetCoord:WaypointAirTurningPoint(nil, cruiseSpeed * 0.514444)
-  -- Add bombing task
-  targetWP.task = {
-    id = "ComboTask",
-    params = {
-      tasks = {
-        {
-          id = "Bombing",
-          params = {
-            point = {x = targetCoord.x, y = targetCoord.z},
-            weaponType = 2032, -- Bombs
-            expend = "All",
-            attackQty = 1,
+  -- Process each target (TARGET1, TARGET2, TARGET3...)
+  for targetIndex, targetData in ipairs(self.Targets) do
+    local targetCoord = targetData.coordinate
+    local targetName = targetData.name or string.format("Target %d", targetIndex)
+    local attackType = targetData.attackType or "AUTO"
+    local attackHeading = targetData.attackHeading
+    
+    BASE:I(string.format("Processing target %d/%d: %s at %s (Type: %s, Heading: %s)", 
+      targetIndex, #self.Targets, targetName, targetCoord:ToStringLLDMS(), 
+      attackType, attackHeading and string.format("%.0f°", attackHeading) or "AUTO"))
+    
+    -- Determine if this is a runway/carpet bombing target
+    local isRunwayTarget = false
+    local runwayHeading = attackHeading -- Use specified heading if provided
+    
+    if attackType == "RUNWAY" then
+      -- Explicitly marked as runway attack
+      isRunwayTarget = true
+      BASE:I(string.format("Target %d: RUNWAY attack (marked explicitly)", targetIndex))
+      
+      -- If no heading specified, try to detect from airbase
+      if not runwayHeading then
+        local targetAirbase = targetCoord:GetClosestAirbase(Airbase.Category.AIRDROME)
+        if targetAirbase then
+          local airbaseCoord = targetAirbase:GetCoordinate()
+          local distanceToAirbase = targetCoord:Get2DDistance(airbaseCoord)
+          BASE:I(string.format("Nearest airbase: %s (%.0f m away)", targetAirbase:GetName(), distanceToAirbase))
+          
+          -- Try to get runway heading
+          local runways = targetAirbase:GetRunways()
+          if runways and #runways > 0 then
+            runwayHeading = runways[1].course or 0
+            BASE:I(string.format("Using airbase runway heading: %.0f°", runwayHeading))
+          else
+            -- Calculate heading from airbase to marker
+            runwayHeading = airbaseCoord:HeadingTo(targetCoord)
+            BASE:I(string.format("Calculated heading from airbase: %.0f°", runwayHeading))
+          end
+        else
+          -- No airbase found, use default north heading
+          runwayHeading = 0
+          BASE:I("No airbase found, using heading 0° (north)")
+        end
+      else
+        BASE:I(string.format("Using specified attack heading: %.0f°", runwayHeading))
+      end
+      
+    elseif attackType == "AUTO" then
+      -- Auto-detect based on proximity to airbase
+      local targetAirbase = targetCoord:GetClosestAirbase(Airbase.Category.AIRDROME)
+      
+      if targetAirbase then
+        local airbaseCoord = targetAirbase:GetCoordinate()
+        local distanceToAirbase = targetCoord:Get2DDistance(airbaseCoord)
+        BASE:I(string.format("Nearest airbase: %s (%.0f m away)", targetAirbase:GetName(), distanceToAirbase))
+        
+        -- If target is within configured radius of an airbase, treat as runway attack
+        if distanceToAirbase < BOMBER_ESCORT_CONFIG.RunwayDetectionRadius then
+          isRunwayTarget = true
+          
+          -- Try to get runway heading for attack direction
+          local runways = targetAirbase:GetRunways()
+          if runways and #runways > 0 then
+            runwayHeading = runways[1].course or 0
+            BASE:I(string.format("AUTO-DETECTED RUNWAY: %s Runway %.0f°", 
+              targetAirbase:GetName(), runwayHeading))
+          else
+            -- Calculate heading from airbase to target
+            runwayHeading = airbaseCoord:HeadingTo(targetCoord)
+            BASE:I(string.format("AUTO-DETECTED RUNWAY: %s (calculated heading %.0f°)", 
+              targetAirbase:GetName(), runwayHeading))
+          end
+        else
+          BASE:I(string.format("Target too far from airbase (%.0f m) - using point target bombing", distanceToAirbase))
+        end
+      else
+        BASE:I("No airbase found near target - using point target bombing")
+      end
+    else
+      -- Other attack types (BRIDGE, BUILDING, etc.) use point target bombing
+      BASE:I(string.format("Target %d: %s attack - using point target bombing", targetIndex, attackType))
+    end
+    
+    -- Configure bombing run based on target type
+    local ipDistance, ipHeading, attackQty, attackType, expend
+    
+    if isRunwayTarget then
+      -- RUNWAY CARPET BOMBING - Single devastating pass
+      -- Position IP out along runway axis for long, straight approach
+      ipDistance = BOMBER_ESCORT_CONFIG.RunwayApproachDistance
+      
+      -- Determine best approach direction based on current position
+      -- Get last position (either last route waypoint or climb point)
+      local lastPos = #self.RouteWaypoints > 0 
+        and self.RouteWaypoints[#self.RouteWaypoints].coordinate 
+        or startCoord
+      
+      -- Calculate which runway direction is closer to current heading
+      local headingToTarget = lastPos:HeadingTo(targetCoord)
+      local diff1 = math.abs(headingToTarget - runwayHeading)
+      local diff2 = math.abs(headingToTarget - (runwayHeading + 180))
+      
+      -- Normalize differences to 0-180 range
+      if diff1 > 180 then diff1 = 360 - diff1 end
+      if diff2 > 180 then diff2 = 360 - diff2 end
+      
+      -- Choose runway direction closest to current heading
+      local approachHeading
+      if diff1 < diff2 then
+        -- Approach from opposite of runway heading
+        approachHeading = (runwayHeading + 180) % 360
+        BASE:I(string.format("Runway attack: Approach from %.0f° (runway heading %.0f°)", approachHeading, runwayHeading))
+      else
+        -- Approach from same as runway heading (reciprocal attack)
+        approachHeading = runwayHeading
+        BASE:I(string.format("Runway attack: Approach from %.0f° (reciprocal to runway %.0f°)", approachHeading, (runwayHeading + 180) % 360))
+      end
+      
+      ipHeading = approachHeading
+      attackQty = 1 -- Single pass only
+      attackType = "Carpet" -- Carpet bombing mode
+      expend = "All" -- Drop everything in one pass
+      
+      BASE:I(string.format("Target %d: RUNWAY CARPET BOMB - 1 pass, heading %.0f°, expend ALL", 
+        targetIndex, approachHeading))
+    else
+      -- POINT TARGET (building, bridge, etc.)
+      ipDistance = 20000 -- 20km initial point
+      ipHeading = 180 -- Default approach from north
+      attackQty = #self.Targets == 1 and 4 or 2 -- Fewer passes per target if multiple targets
+      attackType = "Bombing" -- Standard bombing
+      expend = #self.Targets == 1 and "All" or "Half"
+      BASE:I(string.format("Target %d: POINT TARGET - %d passes with standard bombing", 
+        targetIndex, attackQty))
+    end
+    
+    -- Waypoint: IP - Initial Point before this target
+    local ipCoord = targetCoord:Translate(ipDistance, ipHeading):SetAltitude(cruiseAltMeters)
+    table.insert(waypoints, ipCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+    
+    -- For runway carpet bombing, create simple waypoints with bombing task at center
+    if isRunwayTarget then
+      local attackHeading = (ipHeading + 180) % 360
+      
+      -- Start of bombing run - 8km before runway (gives time to arm and drop)
+      local startBombCoord = targetCoord:Translate(8000, ipHeading):SetAltitude(cruiseAltMeters)
+      table.insert(waypoints, startBombCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+      
+      -- Runway center waypoint - CARPET BOMBING TASK HERE
+      local centerWP = targetCoord:SetAltitude(cruiseAltMeters):WaypointAirTurningPoint(nil, cruiseSpeedMPS)
+      local targetVec3 = targetCoord:GetVec3()
+      
+      -- Use proper CarpetBombing task for runway attacks
+      centerWP.task = {
+        id = "ComboTask",
+        params = {
+          tasks = {
+            {
+              enabled = true,
+              auto = false,
+              id = "CarpetBombing",
+              params = {
+                attackType = "Carpet",
+                x = targetVec3.x,
+                y = targetVec3.z,
+                point = {x = targetVec3.x, y = targetVec3.z},
+                groupAttack = true,
+                carpetLength = 3000, -- 3km carpet along attack axis
+                expend = "All",
+                attackQtyLimit = false, -- No limit on attack quantity
+                attackQty = 10, -- Up to 10 passes
+                directionEnabled = true,
+                direction = math.rad(attackHeading), -- DCS uses radians
+                altitudeEnabled = false,
+                weaponType = 1073741822 -- Auto-select bombs (ENUMS.WeaponFlag.AutoDCS)
+              }
+            }
           }
         }
       }
-    }
-  }
-  table.insert(waypoints, targetWP)
+      table.insert(waypoints, centerWP)
+      
+      -- End of bombing run - 8km past runway
+      local endBombCoord = targetCoord:Translate(8000, attackHeading):SetAltitude(cruiseAltMeters)
+      table.insert(waypoints, endBombCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+      
+      BASE:I(string.format("Runway attack: IP→Start(-8km)→Center(CARPET BOMB)→End(+8km) heading %.0f°", attackHeading))
+      
+    else
+      -- POINT TARGET: Standard bombing with multiple passes
+      local bombingCoord = targetCoord:SetAltitude(cruiseAltMeters)
+      local targetWP = bombingCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS)
+      local targetVec3 = targetCoord:GetVec3()
+      
+      targetWP.task = {
+        id = "ComboTask",
+        params = {
+          tasks = {
+            {
+              enabled = true,
+              auto = false,
+              id = "Bombing",
+              params = {
+                point = {x = targetVec3.x, y = targetVec3.z},
+                attackQtyLimit = false,
+                attackQty = attackQty,
+                directionEnabled = false,
+                altitudeEnabled = false,
+                weaponType = 2032, -- General purpose bombs
+                expend = expend,
+                groupAttack = true
+              }
+            }
+          }
+        }
+      }
+      table.insert(waypoints, targetWP)
+    end
+    
+    -- Add egress waypoints after last target
+    local isLastTarget = (targetIndex == #self.Targets)
+    
+    if isLastTarget then
+      -- Check if custom egress waypoints are provided
+      if self.EgressWaypoints and #self.EgressWaypoints > 0 then
+        BASE:I(string.format("Adding %d custom egress waypoints", #self.EgressWaypoints))
+        for i, egressData in ipairs(self.EgressWaypoints) do
+          local egressCoord = egressData.coordinate:SetAltitude(cruiseAltMeters)
+          table.insert(waypoints, egressCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+          BASE:I(string.format("Added custom egress waypoint %d at %s", i, egressCoord:ToStringLLDMS()))
+        end
+      else
+        -- Standard egress waypoint after last target
+        if not isRunwayTarget then
+          local egressCoord = targetCoord:Translate(30000, 0):SetAltitude(cruiseAltMeters)
+          table.insert(waypoints, egressCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+        else
+          local finalEgressCoord = targetCoord:Translate(25000, (ipHeading + 180) % 360):SetAltitude(cruiseAltMeters)
+          table.insert(waypoints, finalEgressCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+        end
+        BASE:I("Added standard egress waypoint")
+      end
+    else
+      -- Not the last target, add transition egress between targets
+      if not isRunwayTarget then
+        local egressCoord = targetCoord:Translate(30000, 0):SetAltitude(cruiseAltMeters)
+        table.insert(waypoints, egressCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+      else
+        local finalEgressCoord = targetCoord:Translate(25000, (ipHeading + 180) % 360):SetAltitude(cruiseAltMeters)
+        table.insert(waypoints, finalEgressCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+      end
+    end
+  end
   
-  -- Waypoint N+1: Egress
-  local egressCoord = targetCoord:Translate(30000, 0) -- 30km past target
-  egressCoord:SetAltitude(cruiseAlt * 0.3048)
-  table.insert(waypoints, egressCoord:WaypointAirTurningPoint(nil, cruiseSpeed * 0.514444))
-  
-  -- Waypoint N+2: RTB (Return to start airbase)
-  if self.StartAirbase then
+  -- Final waypoint: RTB (Return to start airbase or custom RTB point)
+  if self.RTBWaypoint then
+    -- Use custom RTB waypoint
+    BASE:I(string.format("Using custom RTB waypoint at %s", self.RTBWaypoint.coordinate:ToStringLLDMS()))
+    local rtbCoord = self.RTBWaypoint.coordinate
+    
+    -- Check if RTB is near an airbase for landing
+    local rtbAirbase = rtbCoord:GetClosestAirbase(Airbase.Category.AIRDROME)
+    if rtbAirbase then
+      local airbaseCoord = rtbAirbase:GetCoordinate()
+      local distance = rtbCoord:Get2DDistance(airbaseCoord)
+      if distance < 5000 then -- Within 5km, assume landing
+        BASE:I(string.format("RTB at airbase %s - creating landing waypoint", rtbAirbase:GetName()))
+        table.insert(waypoints, airbaseCoord:WaypointAirLanding(cruiseSpeed * 0.514444 * 0.7, rtbAirbase))
+      else
+        -- Just a regular waypoint, not landing
+        BASE:I("RTB waypoint not near airbase - regular waypoint")
+        table.insert(waypoints, rtbCoord:SetAltitude(cruiseAltMeters):WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+      end
+    else
+      BASE:I("RTB waypoint not near airbase - regular waypoint")
+      table.insert(waypoints, rtbCoord:SetAltitude(cruiseAltMeters):WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+    end
+  elseif self.StartAirbase then
+    -- Return to start airbase
     local airbase = AIRBASE:FindByName(self.StartAirbase)
     if airbase then
       local rtbCoord = airbase:GetCoordinate()
+      BASE:I(string.format("RTB to start airbase: %s", self.StartAirbase))
       table.insert(waypoints, rtbCoord:WaypointAirLanding(cruiseSpeed * 0.514444 * 0.7, airbase))
     end
   end
@@ -1107,11 +2186,12 @@ end
 
 --- Create target zone
 -- @param #BOMBER_MISSION self
--- @return #ZONE Target zone
+-- @return #ZONE Target zone for first target
 function BOMBER_MISSION:_CreateTargetZone()
-  if self.TargetPos then
-    local coord = COORDINATE:New(self.TargetPos.x, self.TargetPos.alt or 0, self.TargetPos.y)
-    return ZONE_RADIUS:New(self.TargetName or "Target", coord:GetVec2(), 2000) -- 2km radius
+  if self.Targets and #self.Targets > 0 then
+    local firstTarget = self.Targets[1]
+    local coord = firstTarget.coordinate
+    return ZONE_RADIUS:New(firstTarget.name or "Target", coord:GetVec2(), 2000) -- 2km radius
   end
   return nil
 end
@@ -1120,12 +2200,29 @@ end
 -- @param #BOMBER_MISSION self
 -- @return #string Template name
 function BOMBER_MISSION:_GetTemplateName()
-  -- Convert bomber type to template name
-  -- B-52H -> BOMBER_B52
-  -- B-17G -> BOMBER_B17
-  local typeName = string.gsub(self.BomberType, "[-]", "")
-  typeName = string.gsub(typeName, "MS", "") -- Tu-95MS -> Tu-95
-  return "BOMBER_" .. string.upper(typeName)
+  -- Convert bomber type to template name by removing hyphens and MS suffix
+  -- Examples:
+  --   B-52H    -> BOMBER_B52H
+  --   B-17G    -> BOMBER_B17G
+  --   B-1B     -> BOMBER_B1B
+  --   Tu-95MS  -> BOMBER_TU95
+  --   Tu-22M3  -> BOMBER_TU22M3
+  --   B-24J    -> BOMBER_B24J
+  
+  local typeName = self.BomberType
+  
+  -- Remove hyphens
+  typeName = string.gsub(typeName, "[-]", "")
+  
+  -- Remove MS suffix only (for Tu-95MS)
+  typeName = string.gsub(typeName, "MS$", "")
+  
+  -- Return template name
+  local templateName = "BOMBER_" .. string.upper(typeName)
+  
+  BASE:I(string.format("Converting bomber type '%s' to template '%s'", self.BomberType, templateName))
+  
+  return templateName
 end
 
 --- Generate callsign
@@ -1436,13 +2533,80 @@ BOMBER = {
 --- Bomber states
 BOMBER.States = {
   SPAWNED = "Spawned",
-  ENROUTE = "Enroute",
-  ATTACKING = "Attacking",
-  EGRESSING = "Egressing",
-  ABORTING = "Aborting",
-  RTB = "RTB",
+  HOLDING = "Holding",           -- Waiting for escort on ground
+  ENGINE_STARTING = "EngineStarting",  -- Cold start, engines spooling up
+  TAXIING = "Taxiing",           -- Moving to runway
+  BLOCKED = "Blocked",           -- Stuck on taxiway due to obstruction
+  TAKING_OFF = "TakingOff",      -- Takeoff roll and initial climb
+  CLIMBING = "Climbing",         -- Climbing to cruise altitude
+  CRUISE = "Cruise",             -- At cruise altitude, en route to target
+  PRE_ATTACK = "PreAttack",      -- Approaching target, preparing for attack
+  ATTACKING = "Attacking",       -- Bombing run in progress
+  EGRESSING = "Egressing",       -- Leaving target area
+  ABORTING = "Aborting",         -- Mission abort in progress
+  RTB = "RTB",                   -- Returning to base
   LANDED = "Landed",
   DESTROYED = "Destroyed"
+}
+
+--- Escort loss messages - 3 escalating levels with 15 variations each
+BOMBER.EscortLossMessages = {
+  -- Level 1: Casual check-in (just noticed escort missing)
+  Level1 = {
+    "Hey, you still with me up here?",
+    "Escort, say position.",
+    "Where'd my escort go?",
+    "Anyone got eyes on my escort?",
+    "Escort flight, check in.",
+    "Lost visual on my escort. Anyone got them?",
+    "Escort, this is %s, requesting position.",
+    "Could use a wingman visual right about now.",
+    "Escort's gone quiet. Anyone have comms?",
+    "Did my escort peel off? Say status.",
+    "No visual on escort. Requesting check-in.",
+    "Escort flight, say your position please.",
+    "Lost my escort somewhere back there.",
+    "Anybody see where my fighters went?",
+    "Escort, you still up?"
+  },
+  
+  -- Level 2: Getting concerned (been a while, need help)
+  Level2 = {
+    "This mission requires escorts - I'm gonna need some help up here!",
+    "I need fighter support ASAP, getting exposed out here.",
+    "Where are my escorts? Requesting immediate support!",
+    "No escort coverage - I need fighters NOW!",
+    "Getting lonely up here. Need escort support!",
+    "Request immediate fighter assistance - lost my escort!",
+    "I need some friends up here - requesting fighter support!",
+    "This is a bad time to be alone. Need escorts NOW!",
+    "Unescorted bomber - requesting fighter support immediately!",
+    "No fighter coverage - need help up here!",
+    "Lost my escort and I need them back NOW!",
+    "Requesting urgent fighter support - unescorted!",
+    "I'm exposed out here - need escort ASAP!",
+    "Where's my cover? Need fighters immediately!",
+    "Getting nervous without escorts - need support NOW!"
+  },
+  
+  -- Level 3: Critical/Panic (about to abort)
+  Level3 = {
+    "NO ESCORT FOR %d SECONDS! REQUESTING IMMEDIATE ABORT CLEARANCE!",
+    "UNESCORTED TOO LONG - ABORTING MISSION NOW!",
+    "MISSION ABORT - NO FIGHTER SUPPORT FOR %d SECONDS!",
+    "THIS IS SUICIDE WITHOUT ESCORTS - ABORTING!",
+    "NO PROTECTION FOR %d SECONDS - TURNING AROUND!",
+    "ABORT ABORT ABORT - NO ESCORT COVERAGE!",
+    "CANNOT CONTINUE UNESCORTED - ABORTING MISSION!",
+    "TOO EXPOSED - MISSION ABORT IN PROGRESS!",
+    "NO FIGHTERS FOR %d SECONDS - GETTING OUT OF HERE!",
+    "ABORT - UNESCORTED FOR TOO LONG!",
+    "MISSION SCRUBBED - NO FIGHTER SUPPORT!",
+    "TURNING BACK - NO ESCORT FOR %d SECONDS!",
+    "ABORT ABORT - UNSAFE TO CONTINUE UNESCORTED!",
+    "MISSION ABORT - FLYING ALONE IS A DEATH SENTENCE!",
+    "NO ESCORTS - ABORTING BEFORE IT'S TOO LATE!"
+  }
 }
 
 --- Create new bomber mission
@@ -1472,19 +2636,57 @@ function BOMBER:New(templateName, missionData)
   self.CruiseAlt = missionData.CruiseAlt or self.Profile.CruiseAlt
   self.CruiseSpeed = missionData.CruiseSpeed or self.Profile.CruiseSpeed
   
+  -- Store target information for bombing task execution
+  self.Targets = missionData.Targets or {}
+  self.CurrentTargetIndex = 1
+  
   -- Status tracking
   self.HasEscort = false
   self.IsUnderThreat = false
   self.AbortRequested = false
   self.MissionStartTime = nil
   self.MissionCompleted = false
+  self.EscortRejoinCount = 0  -- Track how many times escorts have rejoined after leaving
+  self.MaxRejoins = 3  -- Maximum number of rejoins before aborting mission
+  
+  -- Engine start tracking
+  self.EngineStartTime = nil  -- When engines were started
+  
+  -- Holding timeout tracking
+  self.HoldingStartTime = nil  -- When we entered HOLDING state
+  self.MaxHoldingTime = 900  -- 15 minutes in seconds
+  
+  -- Escort roster tracking with memory management
+  self.EscortRoster = {}  -- Table of escort callsigns: {callsign = {unit, joinTime, lastSeen, classification, details, positionHistory}}
+  self.LastKnownEscorts = {}  -- List of callsigns we've confirmed as escorts (preserved when they leave)
+  self.MaxRosterSize = 20  -- Prevent memory bloat - prune oldest entries beyond this
+  self.LastHoldingAnnounce = 0  -- Track last holding announcement time
+  self.WaitingForEscortDeparture = false  -- Flag: detected ground escort, waiting for them to follow
+  self.LastCrewCalloutTime = {}  -- Track last time crew made specific callouts to prevent spam
+  
+  -- Attack tracking flags for event-driven messages
+  self.WeaponsReleased = false
+  self.ImpactAnnounced = false
   
   -- FSM States
   self:SetStartState(BOMBER.States.SPAWNED)
-  self:AddTransition("*", "Takeoff", BOMBER.States.ENROUTE)
-  self:AddTransition(BOMBER.States.ENROUTE, "ReachTarget", BOMBER.States.ATTACKING)
+  
+  -- State transitions
+  self:AddTransition(BOMBER.States.SPAWNED, "WaitForEscort", BOMBER.States.HOLDING)
+  self:AddTransition(BOMBER.States.SPAWNED, "StartEngines", BOMBER.States.ENGINE_STARTING)  -- Direct if escort not required
+  self:AddTransition(BOMBER.States.HOLDING, "StartEngines", BOMBER.States.ENGINE_STARTING)  -- From holding when escort ready
+  self:AddTransition(BOMBER.States.ENGINE_STARTING, "BeginTaxi", BOMBER.States.TAXIING)
+  self:AddTransition(BOMBER.States.TAXIING, "Blocked", BOMBER.States.BLOCKED)  -- Transition when stuck
+  self:AddTransition(BOMBER.States.BLOCKED, "ClearBlockage", BOMBER.States.TAXIING)  -- Resume when clear
+  self:AddTransition(BOMBER.States.TAXIING, "Takeoff", BOMBER.States.TAKING_OFF)
+  self:AddTransition(BOMBER.States.TAKING_OFF, "Blocked", BOMBER.States.BLOCKED)  -- Can get stuck during takeoff roll too
+  self:AddTransition(BOMBER.States.BLOCKED, "ClearBlockage", BOMBER.States.TAKING_OFF)  -- Resume takeoff when clear
+  self:AddTransition(BOMBER.States.TAKING_OFF, "BeginClimb", BOMBER.States.CLIMBING)
+  self:AddTransition(BOMBER.States.CLIMBING, "ReachCruise", BOMBER.States.CRUISE)
+  self:AddTransition(BOMBER.States.CRUISE, "ApproachTarget", BOMBER.States.PRE_ATTACK)
+  self:AddTransition(BOMBER.States.PRE_ATTACK, "BeginAttack", BOMBER.States.ATTACKING)
   self:AddTransition(BOMBER.States.ATTACKING, "BombsAway", BOMBER.States.EGRESSING)
-  self:AddTransition({BOMBER.States.ENROUTE, BOMBER.States.ATTACKING}, "Abort", BOMBER.States.ABORTING)
+  self:AddTransition({BOMBER.States.HOLDING, BOMBER.States.ENGINE_STARTING, BOMBER.States.TAXIING, BOMBER.States.BLOCKED, BOMBER.States.TAKING_OFF, BOMBER.States.CLIMBING, BOMBER.States.CRUISE, BOMBER.States.PRE_ATTACK, BOMBER.States.ATTACKING}, "Abort", BOMBER.States.ABORTING)
   self:AddTransition({BOMBER.States.EGRESSING, BOMBER.States.ABORTING}, "ReturnToBase", BOMBER.States.RTB)
   self:AddTransition(BOMBER.States.RTB, "Land", BOMBER.States.LANDED)
   self:AddTransition("*", "Destroy", BOMBER.States.DESTROYED)
@@ -1500,24 +2702,110 @@ end
 -- @param #BOMBER self
 -- @return #boolean Success
 function BOMBER:Spawn()
+  -- Verify template exists before attempting spawn
+  local templateGroup = GROUP:FindByName(self.TemplateName)
+  if not templateGroup then
+    BASE:E(string.format("ERROR: Template group '%s' not found in mission", self.TemplateName))
+    
+    -- Send message to coalition
+    trigger.action.outTextForCoalition(
+      self.Coalition,
+      string.format(
+        "❌ BOMBER SPAWN FAILED\n\n" ..
+        "Template Missing: %s\n" ..
+        "Bomber Type: %s\n\n" ..
+        "MISSION MAKER: This mission is missing the required bomber template.\n" ..
+        "Add group '%s' in mission editor and set Late Activation = TRUE.",
+        self.TemplateName,
+        self.MissionData.BomberType or "Unknown",
+        self.TemplateName
+      ),
+      30
+    )
+    return false
+  end
+  
   -- Create SPAWN object
   self.Spawner = SPAWN:New(self.TemplateName)
     :InitLimit(1, 0)
     :InitCoalition(self.Coalition)
     :InitGrouping(self.FlightSize)
+    :InitDelayOff()  -- No delay between spawns
   
-  -- Spawn the group
-  self.Group = self.Spawner:Spawn()
+  -- Spawn at the requested airbase if specified
+  local spawnedGroup = nil
+  if self.StartAirbase then
+    local airbase = AIRBASE:FindByName(self.StartAirbase)
+    if airbase then
+      BASE:I(string.format("Spawning %s at airbase: %s", self.Callsign, self.StartAirbase))
+      local success, result = pcall(function()
+        -- Spawn cold & dark so AI doesn't automatically start taxiing
+        return self.Spawner:SpawnAtAirbase(airbase, SPAWN.Takeoff.Cold)
+      end)
+      
+      if success then
+        spawnedGroup = result
+      else
+        BASE:E(string.format("ERROR: Failed to spawn at airbase %s: %s", self.StartAirbase, tostring(result)))
+      end
+    else
+      BASE:E(string.format("ERROR: Airbase '%s' not found for spawn", self.StartAirbase))
+    end
+  end
+  
+  -- Fallback to normal spawn if airbase spawn failed
+  if not spawnedGroup then
+    BASE:I(string.format("Using template location spawn for %s", self.Callsign))
+    local success, result = pcall(function()
+      return self.Spawner:Spawn()
+    end)
+    
+    if not success then
+      BASE:E(string.format("ERROR: Exception during spawn: %s", tostring(result)))
+      trigger.action.outTextForCoalition(
+        self.Coalition,
+        string.format(
+          "❌ BOMBER SPAWN ERROR\n\n" ..
+          "Template: %s\n" ..
+          "Error: %s\n\n" ..
+          "Check DCS log for details.",
+          self.TemplateName,
+          tostring(result)
+        ),
+        30
+      )
+      return false
+    end
+    spawnedGroup = result
+  end
+  
+  self.Group = spawnedGroup
   
   if not self.Group then
-    BASE:E("ERROR: Failed to spawn bomber group")
+    BASE:E("ERROR: Failed to spawn bomber group (returned nil)")
+    trigger.action.outTextForCoalition(
+      self.Coalition,
+      string.format(
+        "❌ BOMBER SPAWN FAILED\n\n" ..
+        "Template: %s\n" ..
+        "Spawn returned nil - check template is properly configured.\n\n" ..
+        "MISSION MAKER: Verify Late Activation is enabled.",
+        self.TemplateName
+      ),
+      30
+    )
     return false
   end
   
+  -- CRITICAL: Stop any default route from template
+  -- The template might have a route set in mission editor, clear it immediately
+  BASE:I(string.format("%s: Clearing template route to prevent auto-taxi", self.Callsign))
+  self.Group:RouteStop()  -- Stop any existing route/taxi orders
+  
   self.MissionStartTime = timer.getTime()
   
-  -- Initialize monitoring systems
-  self.EscortMonitor = BOMBER_ESCORT_MONITOR:New(self):Start()
+  -- Initialize monitoring systems (but don't start escort monitor yet if holding)
+  self.EscortMonitor = BOMBER_ESCORT_MONITOR:New(self)  -- Create but don't start
   self.ThreatManager = BOMBER_THREAT_MANAGER:New(self):Start()
   
   -- Initialize formation manager
@@ -1527,21 +2815,37 @@ function BOMBER:Spawn()
   -- Set up event handlers
   self:_SetupEventHandlers()
   
-  -- Set ROE and ROT
-  self.Group:OptionROEHoldFire()
+  -- Set ROE and ROT - WEAPONS FREE to allow bombing tasks to execute
+  self.Group:OptionROEWeaponFree()
   self.Group:OptionROTPassiveDefense()
   
-  -- If route exists, fly it
+  -- Set alarm state to allow weapon employment
+  self.Group:OptionAlarmStateGreen()
+  
+  -- Allow RTB on out of ammo (let them go home when winchester)
+  self.Group:OptionRTBAmmo(true)
+  
+  BASE:I(string.format("%s: ROE=WEAPONS FREE, Alarm=GREEN, RTB on winchester=ON", self.Callsign))
+  
+  -- If route exists, prepare it (but don't start yet if holding for escort)
   if self.Route and #self.Route > 0 then
-    self:_StartRoute()
+    -- Don't start route yet - check for escort first
+    BASE:I(string.format("%s: Route prepared, checking escort requirements", self.Callsign))
   else
-    BASE:W("No route defined for bomber")
+    env.warning(string.format("[BOMBER] %s: No route defined for bomber", self.Callsign))
   end
   
   BASE:I(string.format("Bomber %s spawned: %s x%d", self.Callsign, self.Profile.DisplayName, self.FlightSize))
   
-  -- Transition to ENROUTE state
-  self:__Takeoff(5)
+  -- Check if escort is required
+  if self.Profile.EscortRequired then
+    BASE:I(string.format("%s: Escort required - checking for ground escorts", self.Callsign))
+    self:__WaitForEscort(2)  -- Transition to HOLDING state after 2 seconds
+  else
+    BASE:I(string.format("%s: Escort not required - beginning mission immediately", self.Callsign))
+    self:_StartRoute()
+    self:__Takeoff(5)  -- Transition to ENROUTE state
+  end
   
   return true
 end
@@ -1555,41 +2859,329 @@ function BOMBER:_StartRoute()
   
   BASE:I(string.format("%s: Starting route with %d waypoints", self.Callsign, #self.Route))
   
-  -- Route the group
+  -- Save original route for resume capability after abort
+  if not self.OriginalRoute then
+    self.OriginalRoute = self.Route
+    BASE:I(string.format("%s: Original route saved for resume capability", self.Callsign))
+  end
+  
+  -- Mark engine start time for detailed state tracking
+  self.EngineStartTime = timer.getTime()
+  
+  -- Activate the group AI to start engines
+  self.Group:Activate()
+  BASE:I(string.format("%s: Group activated (engines starting)", self.Callsign))
+  
+  -- Route the group (DCS AI will handle cold start → taxi → takeoff)
   self.Group:Route(self.Route)
+  BASE:I(string.format("%s: Route commanded - cold start sequence will take ~6 minutes", self.Callsign))
   
   -- Set up waypoint monitoring
   self:_MonitorWaypoints()
+  
+  -- Start monitoring bomber state for FSM transitions (ENGINE_STARTING → TAXIING → TAKING_OFF → CLIMBING → CRUISE)
+  self:_MonitorEngineStart()
+end
+
+--- Monitor bomber state and trigger FSM transitions based on actual aircraft state
+-- Monitors: Engine start → Taxi → Takeoff → Climb → Cruise
+-- Also detects stuck conditions (blockage by other aircraft)
+-- @param #BOMBER self
+function BOMBER:_MonitorEngineStart()
+  local startTime = timer.getTime()
+  local lastStatusTime = startTime
+  local movementDetectedTime = nil
+  local lastMovementTime = nil
+  local stuckWarningIssued = false
+  
+  -- Track which state we've already transitioned to (prevent duplicate transitions)
+  local hasTransitionedToTaxiing = false
+  local hasTransitionedToTakeoff = false
+  local hasTransitionedToClimbing = false
+  
+  self.EngineStartMonitor = SCHEDULER:New(nil, function()
+    if not self.Group or not self:IsAlive() then
+      BASE:I(string.format("%s: Engine start monitor stopping (not alive)", self.Callsign))
+      if self.EngineStartMonitor then
+        self.EngineStartMonitor:Stop()
+        self.EngineStartMonitor = nil
+      end
+      return
+    end
+    
+    local currentTime = timer.getTime()
+    local velocity = self.Group:GetVelocityKNOTS()
+    local altitude = self.Group:GetAltitude()
+    local elapsedTime = currentTime - startTime
+    
+    -- Stop monitoring if we've reached cruise altitude
+    local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
+    local cruiseAltMeters = cruiseAlt * 0.3048
+    if altitude >= (cruiseAltMeters * 0.9) and self:Is(BOMBER.States.CRUISE) then
+      BASE:I(string.format("%s: Reached cruise - stopping ground/climb monitor", self.Callsign))
+      if self.EngineStartMonitor then
+        self.EngineStartMonitor:Stop()
+        self.EngineStartMonitor = nil
+      end
+      return
+    end
+    
+    -- Track movement for stuck detection
+    if velocity > 1 then
+      lastMovementTime = currentTime
+      if not movementDetectedTime then
+        movementDetectedTime = currentTime
+        BASE:I(string.format("%s: Initial movement detected (%.1f kts after %.0f seconds)", 
+          self.Callsign, velocity, elapsedTime))
+      end
+    end
+    
+    -- Send status updates every 90 seconds during long startup
+    if self:Is(BOMBER.States.ENGINE_STARTING) and currentTime - lastStatusTime >= 90 then
+      local elapsedMins = math.floor(elapsedTime / 60)
+      self:_BroadcastMessage(string.format("%s: Still completing startup procedures (%d min elapsed)...", 
+        self.Callsign, elapsedMins))
+      BASE:I(string.format("%s: Engine start in progress - %.0f seconds, velocity: %.1f kts", 
+        self.Callsign, elapsedTime, velocity))
+      lastStatusTime = currentTime
+    end
+    
+    -- === FSM STATE TRANSITIONS BASED ON PHYSICAL STATE ===
+    
+    -- HOLDING → ENGINE_STARTING (when route commanded and engines starting)
+    if self:Is(BOMBER.States.HOLDING) and self.EngineStartTime then
+      self:__StartEngines(0.5)
+      BASE:I(string.format("%s: Transitioning HOLDING → ENGINE_STARTING", self.Callsign))
+    end
+    
+    -- ENGINE_STARTING → TAXIING (sustained movement on ground)
+    if self:Is(BOMBER.States.ENGINE_STARTING) and not hasTransitionedToTaxiing then
+      if movementDetectedTime and (currentTime - movementDetectedTime) >= 10 and velocity > 1 and altitude < 50 then
+        BASE:I(string.format("%s: Sustained movement confirmed (%.1f kts) → TAXIING", self.Callsign, velocity))
+        self:__BeginTaxi(0.5)
+        hasTransitionedToTaxiing = true
+      end
+    end
+    
+    -- TAXIING → TAKING_OFF (fast on ground - takeoff roll)
+    if self:Is(BOMBER.States.TAXIING) and not hasTransitionedToTakeoff then
+      if velocity >= 50 and altitude < 100 then
+        BASE:I(string.format("%s: Takeoff speed reached (%.1f kts) → TAKING_OFF", self.Callsign, velocity))
+        self:__Takeoff(0.5)
+        hasTransitionedToTakeoff = true
+      end
+    end
+    
+    -- TAKING_OFF → CLIMBING (airborne and climbing)
+    if self:Is(BOMBER.States.TAKING_OFF) and not hasTransitionedToClimbing then
+      if altitude >= 500 then  -- 500ft AGL = definitely airborne
+        BASE:I(string.format("%s: Airborne (%.0f ft) → CLIMBING", self.Callsign, altitude * 3.28084))
+        self:__BeginClimb(0.5)
+        hasTransitionedToClimbing = true
+      end
+    end
+    
+    -- CLIMBING → CRUISE (reached cruise altitude)
+    if self:Is(BOMBER.States.CLIMBING) then
+      if altitude >= (cruiseAltMeters * 0.9) then  -- Within 10% of cruise altitude
+        BASE:I(string.format("%s: Reached cruise altitude (%.0f ft) → CRUISE", self.Callsign, altitude * 3.28084))
+        self:__ReachCruise(0.5)
+      end
+    end
+    
+    -- === STUCK DETECTION (works during TAXIING/TAKING_OFF states) ===
+    if (self:Is(BOMBER.States.TAXIING) or self:Is(BOMBER.States.TAKING_OFF)) then
+      if movementDetectedTime and lastMovementTime then
+        local stuckDuration = currentTime - lastMovementTime
+        
+        if velocity < 1 and stuckDuration >= 180 then
+          -- Transition to BLOCKED state after 3 minutes of being stuck
+          if not self:Is(BOMBER.States.BLOCKED) then
+            BASE:E(string.format("%s: WARNING - Bomber stuck/blocked (stationary for %.0f seconds) → BLOCKED", 
+              self.Callsign, stuckDuration))
+            self:__Blocked(0.5)
+            stuckWarningIssued = true
+          end
+          
+          -- If stuck for 5 minutes total, scrub mission
+          if stuckDuration >= 300 then
+            BASE:E(string.format("%s: CRITICAL - Bomber stuck for 5 minutes - scrubbing mission", 
+              self.Callsign))
+            self:_BroadcastMessage(string.format("%s: ❌ Aircraft blocked for 5 minutes - mission scrubbed", 
+              self.Callsign))
+            
+            if self.EngineStartMonitor then
+              self.EngineStartMonitor:Stop()
+              self.EngineStartMonitor = nil
+            end
+            
+            -- Scrub mission and cleanup
+            self:_ScrubMission("Blocked on taxiway")
+            return
+          end
+        else
+          -- Movement resumed - transition from BLOCKED back to appropriate state
+          if self:Is(BOMBER.States.BLOCKED) and velocity > 1 then
+            BASE:I(string.format("%s: Blockage cleared - resuming (velocity: %.1f kts)", self.Callsign, velocity))
+            self:_BroadcastMessage(string.format("%s: ✓ Taxiway cleared - resuming departure", 
+              self.Callsign))
+            
+            -- Determine which state to return to based on velocity
+            if velocity >= 50 then
+              -- Fast enough for takeoff
+              self:__ClearBlockage(0.5)  -- Will transition to TAKING_OFF via the transition rule
+            else
+              -- Still taxiing speed
+              self:__ClearBlockage(0.5)  -- Will transition to TAXIING via the transition rule
+            end
+            stuckWarningIssued = false
+          end
+        end
+      end
+    end
+    
+    -- Safety timeout: 10 minutes (600 seconds) for complete startup + taxi + takeoff
+    if elapsedTime > 600 and not self:Is(BOMBER.States.CLIMBING) and not self:Is(BOMBER.States.CRUISE) then
+      BASE:E(string.format("%s: ERROR - Startup/departure timeout after 10 minutes", self.Callsign))
+      self:_BroadcastMessage(string.format("%s: ❌ Aircraft departure failure after 10 minutes - mission scrubbed", 
+        self.Callsign))
+      
+      if self.EngineStartMonitor then
+        self.EngineStartMonitor:Stop()
+        self.EngineStartMonitor = nil
+      end
+      
+      self:_ScrubMission("Startup/departure timeout")
+      return
+    end
+    
+  end, {}, 2, 5)  -- Check every 5 seconds
+end
+      
+      if self.EngineStartMonitor then
+        self.EngineStartMonitor:Stop()
+        self.EngineStartMonitor = nil
+      end
+      
+      -- Scrub mission and cleanup
+      self:_ScrubMission("Startup/taxi timeout")
+    end
+    
+  end, {}, 5, 5)  -- Check every 5 seconds
 end
 
 --- Monitor waypoint progress
 -- @param #BOMBER self
 function BOMBER:_MonitorWaypoints()
+  -- Track current waypoint index
+  self.CurrentWaypointIndex = 1
+  
+  -- Find which waypoint has the bombing task (to know when to transition to ATTACKING)
+  self.BombingWaypointIndex = nil
+  if self.Route then
+    for i, wp in ipairs(self.Route) do
+      if wp.task and wp.task.params and wp.task.params.tasks then
+        for _, task in ipairs(wp.task.params.tasks) do
+          if task.id == "Bombing" or task.id == "CarpetBombing" then
+            self.BombingWaypointIndex = i
+            BASE:I(string.format("%s: Detected bombing task at waypoint %d/%d", self.Callsign, i, #self.Route))
+            break
+          end
+        end
+      end
+      if self.BombingWaypointIndex then break end
+    end
+  end
+  
   -- Schedule waypoint checks
   self.WaypointMonitor = SCHEDULER:New(nil, function()
+    BASE:I(string.format("%s: Waypoint monitor cycle - checking position and state", self.Callsign))
+    
     if not self:IsAlive() then
+      BASE:I(string.format("%s: Not alive, skipping monitor", self.Callsign))
       return
     end
     
-    local currentWP = self.Group:GetTaskRoute() or 0
-    local totalWP = #self.Route
-    
-    -- Check if at target waypoint (N-1 from end, which is the bombing run)
-    if currentWP >= totalWP - 2 and not self:Is(BOMBER.States.ATTACKING) then
-      self:__ReachTarget(0)
+    if not self.Route then
+      BASE:I(string.format("%s: No route defined, skipping monitor", self.Callsign))
+      return
     end
     
-    -- Check if past target (egress)
-    if currentWP >= totalWP - 1 and self:Is(BOMBER.States.ATTACKING) then
+    local totalWP = #self.Route
+    if totalWP == 0 then 
+      BASE:I(string.format("%s: Route has 0 waypoints, skipping monitor", self.Callsign))
+      return 
+    end
+    
+    BASE:I(string.format("%s: Current state: %s, Current WP Index: %d/%d", 
+      self.Callsign, self:GetState(), self.CurrentWaypointIndex, totalWP))
+    
+    -- Get current position
+    local currentPos = self.Group:GetCoordinate()
+    if not currentPos then 
+      BASE:E(string.format("%s: Failed to get current coordinate!", self.Callsign))
+      return 
+    end
+    
+    BASE:I(string.format("%s: Current position: %s", self.Callsign, currentPos:ToStringLLDMS()))
+    
+    -- Check distance to next waypoint
+    if self.CurrentWaypointIndex <= totalWP then
+      local nextWP = self.Route[self.CurrentWaypointIndex]
+      if nextWP and nextWP.x and nextWP.y then
+        local wpCoord = COORDINATE:New(nextWP.x, nextWP.alt or 0, nextWP.y)
+        local distance = currentPos:Get2DDistance(wpCoord)
+        
+        -- If within 5km of waypoint, consider it reached (larger radius for IP runs)
+        if distance < 5000 then
+          BASE:I(string.format("%s: Reached waypoint %d/%d (distance: %.1f km)", self.Callsign, self.CurrentWaypointIndex, totalWP, distance/1000))
+          self.CurrentWaypointIndex = self.CurrentWaypointIndex + 1
+        end
+      end
+    end
+    
+    -- Check distance to bombing waypoint for state transitions (CRUISE → PRE_ATTACK → ATTACKING)
+    if self.BombingWaypointIndex then
+      local bombWP = self.Route[self.BombingWaypointIndex]
+      if bombWP and bombWP.x and bombWP.y then
+        local bombCoord = COORDINATE:New(bombWP.x, bombWP.alt or 0, bombWP.y)
+        local distToBomb = currentPos:Get2DDistance(bombCoord)
+        
+        BASE:I(string.format("%s: Distance to bombing waypoint: %.1f km (State: %s)", 
+          self.Callsign, distToBomb/1000, self:GetState()))
+        
+        -- CRUISE → PRE_ATTACK when within 50km of target
+        if self:Is(BOMBER.States.CRUISE) and distToBomb < 50000 then
+          BASE:I(string.format("%s: Approaching target (%.1f km) → PRE_ATTACK", self.Callsign, distToBomb/1000))
+          self:__ApproachTarget(0.5)
+        end
+        
+        -- PRE_ATTACK → ATTACKING when within 15km of target
+        if self:Is(BOMBER.States.PRE_ATTACK) and distToBomb < 15000 then
+          BASE:I(string.format("%s: At attack range (%.1f km) → ATTACKING", self.Callsign, distToBomb/1000))
+          self:__BeginAttack(0.5)
+        end
+      else
+        BASE:E(string.format("%s: Bombing waypoint %d has no coordinates!", self.Callsign, self.BombingWaypointIndex))
+      end
+    else
+      BASE:I(string.format("%s: No bombing waypoint detected in route", self.Callsign))
+    end
+    
+    -- Egress after bombing - when we're past the bombing waypoint by 2+ waypoints
+    if self.BombingWaypointIndex and self.CurrentWaypointIndex >= self.BombingWaypointIndex + 2 
+       and self:Is(BOMBER.States.ATTACKING) then
+      BASE:I(string.format("%s: Past bombing area (current: %d, bombing was: %d) - transitioning to EGRESSING", 
+        self.Callsign, self.CurrentWaypointIndex, self.BombingWaypointIndex))
       self:__BombsAway(0)
     end
     
-    -- Check if at final waypoint
-    if currentWP >= totalWP and self:Is(BOMBER.States.EGRESSING) then
+    -- RTB when all waypoints complete
+    if self.CurrentWaypointIndex > totalWP and self:Is(BOMBER.States.EGRESSING) then
       self:__ReturnToBase(0)
     end
     
-  end, {}, 10, 10)
+  end, {}, 5, 5)  -- Check every 5 seconds instead of 10 for more responsive state changes
 end
 
 --- Check if bomber is alive
@@ -1627,6 +3219,445 @@ function BOMBER:_SetupEventHandlers()
       end
     end
   end)
+  
+  -- Track IP runs for status announcements
+  self.IPRunCount = 0
+  self.LastIPRunTime = 0
+  
+  -- Handle weapon release (Shot event = weapon fired/dropped)
+  self:HandleEvent(EVENTS.Shot, function(self, EventData)
+    if EventData.IniGroup and EventData.IniGroup:GetName() == self.Group:GetName() then
+      -- Only announce first weapon release during attack
+      if self:Is(BOMBER.States.ATTACKING) and not self.WeaponsReleased then
+        self.WeaponsReleased = true
+        
+        -- Use crew awareness callout
+        self:_CrewAwarenessCallout("weapons_release")
+        
+        BASE:I(string.format("%s: SHOT event detected - weapons released", self.Callsign))
+      end
+    end
+  end)
+  
+  -- Handle weapon impact (for BDA - Battle Damage Assessment)
+  self:HandleEvent(EVENTS.Hit, function(self, EventData)
+    -- Check if weapon was fired by our bomber group
+    if EventData.IniGroup and EventData.IniGroup:GetName() == self.Group:GetName() then
+      if self:Is(BOMBER.States.ATTACKING) or self:Is(BOMBER.States.EGRESSING) then
+        -- Announce impact only once per attack run
+        if not self.ImpactAnnounced then
+          self.ImpactAnnounced = true
+          
+          local impactMessages = {
+            "%s: Good impacts observed! Target hit!",
+            "%s: Direct hit confirmed! Excellent bombing!",
+            "%s: Bombs on target! Solid hits!",
+            "%s: Target struck! Impact confirmed!"
+          }
+          local msg = impactMessages[math.random(#impactMessages)]
+          
+          -- Announce impact after short delay
+          SCHEDULER:New(nil, function()
+            if self:IsAlive() then
+              self:_BroadcastMessage(string.format(msg, self.Callsign))
+              BASE:I(string.format("%s: HIT event detected - impact confirmed", self.Callsign))
+            end
+          end, {}, 2)
+        end
+      end
+    end
+  end)
+end
+
+--- Add fighter to escort roster with memory management
+-- @param #BOMBER self
+-- @param #string callsign Fighter callsign
+-- @param Wrapper.Unit#UNIT unit Fighter unit
+function BOMBER:_AddToEscortRoster(callsign, unit)
+  local currentTime = timer.getTime()
+  
+  if not self.EscortRoster[callsign] then
+    -- New escort joining
+    self.EscortRoster[callsign] = {
+      unit = unit,
+      joinTime = currentTime,
+      lastSeen = currentTime,
+      rejoins = 0
+    }
+    -- Store in LastKnownEscorts for message personalization
+    if not self.LastKnownEscorts then
+      self.LastKnownEscorts = {}
+    end
+    table.insert(self.LastKnownEscorts, callsign)
+    BASE:I(string.format("%s: Added %s to escort roster", self.Callsign, callsign))
+  else
+    -- Existing escort seen again
+    self.EscortRoster[callsign].lastSeen = currentTime
+  end
+  
+  -- Prune old entries to prevent memory bloat
+  self:_PruneEscortRoster()
+end
+
+--- Update escort roster based on current scan with join/leave announcements and classification
+-- @param #BOMBER self
+-- @param #table currentEscorts Table of {callsign = {unit, classification, details}}
+function BOMBER:_UpdateEscortRoster(currentEscorts)
+  local currentTime = timer.getTime()
+  local joined = {}
+  local joinedConfirmed = {}
+  local joinedProbable = {}
+  local left = {}
+  local statusChanged = {}  -- Track escorts whose classification changed
+  
+  -- Check for new escorts (joins)
+  for callsign, escortData in pairs(currentEscorts) do
+    local unit = escortData.unit
+    local classification = escortData.classification
+    local details = escortData.details
+    
+    if not self.EscortRoster[callsign] then
+      -- New escort
+      if classification == "confirmed" then
+        table.insert(joinedConfirmed, callsign)
+      elseif classification == "probable" then
+        table.insert(joinedProbable, callsign)
+      end
+      
+      self.EscortRoster[callsign] = {
+        unit = unit,
+        joinTime = currentTime,
+        lastSeen = currentTime,
+        rejoins = 0,
+        classification = classification,
+        details = details,
+        positionHistory = {{time = currentTime, coord = unit:GetCoordinate(), heading = details.heading or 0}}
+      }
+    else
+      -- Known escort, update info
+      local timeSinceLastSeen = currentTime - self.EscortRoster[callsign].lastSeen
+      local previousClassification = self.EscortRoster[callsign].classification
+      
+      if timeSinceLastSeen > 120 then  -- Was gone for > 2 minutes
+        if classification == "confirmed" then
+          table.insert(joinedConfirmed, callsign)
+        elseif classification == "probable" then
+          table.insert(joinedProbable, callsign)
+        end
+        self.EscortRoster[callsign].rejoins = self.EscortRoster[callsign].rejoins + 1
+      elseif previousClassification ~= classification then
+        -- Track classification changes (e.g., probable -> confirmed)
+        table.insert(statusChanged, {callsign = callsign, from = previousClassification, to = classification})
+      end
+      
+      self.EscortRoster[callsign].lastSeen = currentTime
+      self.EscortRoster[callsign].classification = classification
+      self.EscortRoster[callsign].details = details
+      
+      -- Update position history (keep last 10 positions for tracking)
+      if not self.EscortRoster[callsign].positionHistory then
+        self.EscortRoster[callsign].positionHistory = {}
+      end
+      local coord = unit:GetCoordinate()
+      if coord then
+        table.insert(self.EscortRoster[callsign].positionHistory, {
+          time = currentTime, 
+          coord = coord, 
+          heading = details.heading or 0
+        })
+        -- Keep only recent history
+        if #self.EscortRoster[callsign].positionHistory > 10 then
+          table.remove(self.EscortRoster[callsign].positionHistory, 1)
+        end
+      end
+    end
+  end
+  
+  -- Check for escorts that left (not in current scan)
+  for callsign, data in pairs(self.EscortRoster) do
+    local timeSinceLastSeen = currentTime - data.lastSeen
+    if timeSinceLastSeen > 120 and timeSinceLastSeen < 150 then  -- Just left (2-2.5 min window to announce once)
+      table.insert(left, callsign)
+    end
+  end
+  
+  -- Announce confirmed escort joins
+  if #joinedConfirmed > 0 then
+    local joinList = table.concat(joinedConfirmed, ", ")
+    self:_CrewCallout("escort_join", string.format("%s: ✈️ Escort confirmed in formation: %s", self.Callsign, joinList), 60)
+    BASE:I(string.format("%s: Confirmed escorts joined: %s", self.Callsign, joinList))
+  end
+  
+  -- Announce probable escort joins (less urgent)
+  if #joinedProbable > 0 then
+    local joinList = table.concat(joinedProbable, ", ")
+    self:_CrewCallout("escort_probable", string.format("%s: Aircraft detected in vicinity: %s", self.Callsign, joinList), 60)
+    BASE:I(string.format("%s: Probable escorts joined: %s", self.Callsign, joinList))
+  end
+  
+  -- Announce significant status changes (probable -> confirmed)
+  for _, change in ipairs(statusChanged) do
+    if change.from == "probable" and change.to == "confirmed" then
+      self:_CrewCallout("escort_confirmed", 
+        string.format("%s: %s confirmed as escort - matched course and altitude", self.Callsign, change.callsign), 60)
+    elseif change.from == "confirmed" and change.to == "probable" then
+      self:_CrewCallout("escort_drifting", 
+        string.format("%s: ⚠️ %s drifting out of formation", self.Callsign, change.callsign), 60)
+    end
+  end
+  
+  -- Announce departures
+  if #left > 0 then
+    local leftList = table.concat(left, ", ")
+    self:_CrewCallout("escort_left", string.format("%s: ⚠️ Lost escort: %s departed", self.Callsign, leftList), 60)
+    BASE:I(string.format("%s: Escorts left: %s", self.Callsign, leftList))
+  end
+  
+  -- Prune roster
+  self:_PruneEscortRoster()
+end
+
+--- Crew callout with rate limiting to prevent spam
+-- @param #BOMBER self
+-- @param #string calloutType Unique identifier for this type of callout
+-- @param #string message The message to broadcast
+-- @param #number cooldown Minimum seconds between same callout type (default: 30)
+function BOMBER:_CrewCallout(calloutType, message, cooldown)
+  cooldown = cooldown or 30
+  local currentTime = timer.getTime()
+  
+  if not self.LastCrewCalloutTime then
+    self.LastCrewCalloutTime = {}
+  end
+  
+  local lastTime = self.LastCrewCalloutTime[calloutType] or 0
+  if currentTime - lastTime >= cooldown then
+    self:_BroadcastMessage(message)
+    self.LastCrewCalloutTime[calloutType] = currentTime
+  end
+end
+
+--- Get escort status report for crew situational awareness
+-- @param #BOMBER self
+-- @return #string Status report message
+function BOMBER:_GetEscortStatusReport()
+  local confirmed = {}
+  local probable = {}
+  local positions = {
+    front = {},
+    left = {},
+    right = {},
+    rear = {},
+    high = {},
+    low = {}
+  }
+  
+  if not self.Group or not self.Group:IsAlive() then
+    return "Unable to determine escort positions"
+  end
+  
+  local bomberCoord = self.Group:GetCoordinate()
+  local bomberHeading = self.Group:GetHeading()
+  
+  -- Analyze escort positions relative to bomber
+  for callsign, data in pairs(self.EscortRoster) do
+    if data.classification == "confirmed" and data.unit and data.unit:IsAlive() then
+      table.insert(confirmed, callsign)
+      
+      -- Determine relative position
+      local escortCoord = data.unit:GetCoordinate()
+      if escortCoord then
+        local bearing = bomberCoord:HeadingTo(escortCoord)
+        local relativeBearing = bearing - bomberHeading
+        if relativeBearing < 0 then relativeBearing = relativeBearing + 360 end
+        
+        local altDiff = data.details.altitude - (self.Group:GetAltitude() * 3.28084)
+        
+        -- Cardinal positions
+        if relativeBearing >= 315 or relativeBearing < 45 then
+          table.insert(positions.front, callsign)
+        elseif relativeBearing >= 45 and relativeBearing < 135 then
+          table.insert(positions.right, callsign)
+        elseif relativeBearing >= 135 and relativeBearing < 225 then
+          table.insert(positions.rear, callsign)
+        else
+          table.insert(positions.left, callsign)
+        end
+        
+        -- Altitude
+        if altDiff > 1000 then
+          table.insert(positions.high, callsign)
+        elseif altDiff < -1000 then
+          table.insert(positions.low, callsign)
+        end
+      end
+    elseif data.classification == "probable" then
+      table.insert(probable, callsign)
+    end
+  end
+  
+  -- Build report
+  local report = {}
+  
+  if #confirmed > 0 then
+    table.insert(report, string.format("Confirmed escorts: %d", #confirmed))
+    
+    -- Position summary
+    local posSummary = {}
+    if #positions.front > 0 then table.insert(posSummary, string.format("%d forward", #positions.front)) end
+    if #positions.left > 0 then table.insert(posSummary, string.format("%d port", #positions.left)) end
+    if #positions.right > 0 then table.insert(posSummary, string.format("%d starboard", #positions.right)) end
+    if #positions.rear > 0 then table.insert(posSummary, string.format("%d aft", #positions.rear)) end
+    
+    if #posSummary > 0 then
+      table.insert(report, "Positions: " .. table.concat(posSummary, ", "))
+    end
+    
+    if #positions.high > 0 then
+      table.insert(report, string.format("%d high cover", #positions.high))
+    end
+    if #positions.low > 0 then
+      table.insert(report, string.format("%d low", #positions.low))
+    end
+  else
+    table.insert(report, "No confirmed escorts in formation")
+  end
+  
+  if #probable > 0 then
+    table.insert(report, string.format("%d probable nearby", #probable))
+  end
+  
+  return table.concat(report, " | ")
+end
+
+--- Generate contextual crew awareness callout based on situation
+-- @param #BOMBER self
+-- @param #string situation Type of situation: "threat_sam", "threat_fighter", "escort_status", "target_approach"
+function BOMBER:_CrewAwarenessCallout(situation)
+  local currentTime = timer.getTime()
+  
+  if situation == "threat_sam" then
+    -- Crew reacts to SAM threat with knowledge of escort status
+    local escortCount = self.EscortMonitor and self.EscortMonitor.EscortCount or 0
+    if escortCount >= 2 then
+      self:_CrewCallout("threat_sam", 
+        string.format("%s: [PILOT] SAM radar! [COPILOT] Escorts are with us, continuing mission. [EWO] Chaff ready.", self.Callsign), 45)
+    elseif escortCount == 1 then
+      self:_CrewCallout("threat_sam", 
+        string.format("%s: [PILOT] SAM radar! [COPILOT] One escort only... [EWO] Deploying countermeasures!", self.Callsign), 45)
+    else
+      self:_CrewCallout("threat_sam", 
+        string.format("%s: [PILOT] SAM RADAR! [COPILOT] We're alone out here! [NAV] Recommend abort!", self.Callsign), 45)
+    end
+    
+  elseif situation == "threat_fighter" then
+    -- Crew reacts to fighter threat
+    local escortCount = self.EscortMonitor and self.EscortMonitor.EscortCount or 0
+    local hasGuns = self.Profile and self.Profile.HasDefensiveGuns or false
+    
+    if escortCount >= 2 then
+      if hasGuns then
+        self:_CrewCallout("threat_fighter", 
+          string.format("%s: [COPILOT] Bandits! [PILOT] Escorts, engage! [TAIL GUNNER] I see 'em, in position!", self.Callsign), 45)
+      else
+        self:_CrewCallout("threat_fighter", 
+          string.format("%s: [COPILOT] Bandits! [PILOT] Escorts, engage! [EWO] Countermeasures ready!", self.Callsign), 45)
+      end
+    elseif escortCount == 1 then
+      if hasGuns then
+        self:_CrewCallout("threat_fighter", 
+          string.format("%s: [COPILOT] BANDITS! [PILOT] Single escort... [WAIST GUNNER] Multiple hostiles, we're outnumbered!", self.Callsign), 45)
+      else
+        self:_CrewCallout("threat_fighter", 
+          string.format("%s: [COPILOT] BANDITS! [PILOT] Single escort... [EWO] We're vulnerable, recommend evasive action!", self.Callsign), 45)
+      end
+    else
+      if hasGuns then
+        self:_CrewCallout("threat_fighter", 
+          string.format("%s: [TAIL GUNNER] FIGHTERS CLOSING! [PILOT] NO ESCORT! [COPILOT] We need to get out of here!", self.Callsign), 45)
+      else
+        self:_CrewCallout("threat_fighter", 
+          string.format("%s: [EWO] FIGHTERS CLOSING! [PILOT] NO ESCORT! [COPILOT] We need to get out of here NOW!", self.Callsign), 45)
+      end
+    end
+    
+  elseif situation == "escort_status" then
+    -- Periodic escort status update
+    local statusReport = self:_GetEscortStatusReport()
+    self:_CrewCallout("escort_status", 
+      string.format("%s: [NAV] %s", self.Callsign, statusReport), 120)
+    
+  elseif situation == "target_approach" then
+    -- Crew coordination approaching target
+    local escortCount = self.EscortMonitor and self.EscortMonitor.EscortCount or 0
+    if escortCount >= self.Profile.MinEscorts then
+      self:_CrewCallout("target_approach", 
+        string.format("%s: [NAV] IP in 2 minutes. [PILOT] Copy. Escorts, stay tight. [BOMBARDIER] Beginning bomb run.", self.Callsign), 90)
+    else
+      self:_CrewCallout("target_approach", 
+        string.format("%s: [NAV] IP in 2 minutes. [COPILOT] Still waiting on full escort... [PILOT] Holding for now.", self.Callsign), 90)
+    end
+    
+  elseif situation == "weapons_release" then
+    -- Bomb release
+    self:_CrewCallout("weapons_release", 
+      string.format("%s: [BOMBARDIER] BOMBS AWAY! [PILOT] Pulling off target. [NAV] New heading 0-9-0.", self.Callsign), 999)
+      
+  elseif situation == "damage_taken" then
+    -- Aircraft damaged
+    local escortCount = self.EscortMonitor and self.EscortMonitor.EscortCount or 0
+    if escortCount > 0 then
+      self:_CrewCallout("damage", 
+        string.format("%s: [COPILOT] We're hit! [FLIGHT ENGINEER] Checking systems! [PILOT] Escorts, cover our six!", self.Callsign), 60)
+    else
+      self:_CrewCallout("damage", 
+        string.format("%s: [COPILOT] WE'RE HIT! [PILOT] No escort! Get us out of here NOW!", self.Callsign), 60)
+    end
+  end
+end
+
+--- Prune escort roster to prevent memory bloat
+-- @param #BOMBER self
+function BOMBER:_PruneEscortRoster()
+  local currentTime = timer.getTime()
+  local toRemove = {}
+  
+  -- Mark entries for removal if not seen in 10 minutes
+  for callsign, data in pairs(self.EscortRoster) do
+    local timeSinceLastSeen = currentTime - data.lastSeen
+    if timeSinceLastSeen > 600 then  -- 10 minutes
+      table.insert(toRemove, callsign)
+    end
+  end
+  
+  -- Remove stale entries
+  for _, callsign in ipairs(toRemove) do
+    BASE:I(string.format("%s: Pruning stale escort from roster: %s (not seen for 10+ min)", self.Callsign, callsign))
+    self.EscortRoster[callsign] = nil
+  end
+  
+  -- If roster is still too large, remove oldest entries
+  local rosterSize = 0
+  for _ in pairs(self.EscortRoster) do
+    rosterSize = rosterSize + 1
+  end
+  
+  if rosterSize > self.MaxRosterSize then
+    -- Build sorted array by lastSeen time
+    local sortedRoster = {}
+    for callsign, data in pairs(self.EscortRoster) do
+      table.insert(sortedRoster, {callsign = callsign, lastSeen = data.lastSeen})
+    end
+    table.sort(sortedRoster, function(a, b) return a.lastSeen < b.lastSeen end)
+    
+    -- Remove oldest entries beyond max size
+    local toRemoveCount = rosterSize - self.MaxRosterSize
+    for i = 1, toRemoveCount do
+      local callsign = sortedRoster[i].callsign
+      BASE:I(string.format("%s: Pruning escort from roster (size limit): %s", self.Callsign, callsign))
+      self.EscortRoster[callsign] = nil
+    end
+  end
 end
 
 --- Escort arrived event
@@ -1635,16 +3666,105 @@ end
 function BOMBER:OnEscortArrived(escortCount)
   self.HasEscort = true
   
-  local message = string.format("%s: Escort contact, %d fighters. Continuing mission.", 
-    self.Callsign, escortCount)
+  -- Reset escort loss warning flags
+  self.EscortLossWarnings = {
+    initialWarning = false,
+    speedReduction = false,
+  }
+  
+  -- Reset insufficient escort warning flag
+  self.InsufficientEscortWarning = false
+  
+  -- Restore normal speed if it was reduced
+  if self.Group and self.Group:IsAlive() then
+    self.Group:SetSpeed(self.Profile.CruiseSpeed * 0.514444)
+  end
+  
+  BASE:I(string.format("%s: Escort arrived - %d fighters detected", self.Callsign, escortCount))
+  
+  local message = string.format("%s: ✓ Escort contact established. %d fighter%s on station. Proceeding with mission.", 
+    self.Callsign, escortCount, escortCount > 1 and "s" or "")
   self:_BroadcastMessage(message)
   
-  -- If was aborting and escort returns, can resume
-  if self:Is(BOMBER.States.ABORTING) then
-    local unescortedTime = self.EscortMonitor.UnescortedDuration
-    if unescortedTime < 300 then -- Resume if < 5 minutes
-      self:_BroadcastMessage(string.format("%s: Escort rejoined. Resuming mission.", self.Callsign))
+  -- If was aborting/RTB and escort returns, can resume mission if conditions allow
+  if self:Is(BOMBER.States.ABORTING) or self:Is(BOMBER.States.RTB) then
+    -- Increment rejoin counter
+    self.EscortRejoinCount = self.EscortRejoinCount + 1
+    BASE:I(string.format("%s: Escort rejoining (rejoin #%d/%d)", self.Callsign, self.EscortRejoinCount, self.MaxRejoins))
+    
+    -- Check if too many rejoins - indicates unstable/dangerous situation
+    if self.EscortRejoinCount > self.MaxRejoins then
+      BASE:I(string.format("%s: DECISION - ABORT (too many escort rejoins: %d)", self.Callsign, self.EscortRejoinCount))
+      self:_BroadcastMessage(string.format("%s: ❌ Escort rejoined for the %d%s time! Area too dangerous or situation FUBAR. Aborting mission permanently!", 
+        self.Callsign, self.EscortRejoinCount, 
+        self.EscortRejoinCount == 1 and "st" or (self.EscortRejoinCount == 2 and "nd" or (self.EscortRejoinCount == 3 and "rd" or "th"))))
+      
+      -- Continue abort, don't resume
+      if not self:Is(BOMBER.States.RTB) then
+        self:__ReturnToBase(0)
+      end
+      return
+    end
+    
+    local unescortedTime = self.EscortMonitor and self.EscortMonitor.UnescortedDuration or 0
+    BASE:I(string.format("%s: Was aborting/RTB, unescorted for %.0f seconds", self.Callsign, unescortedTime))
+    
+    -- Check fuel level - need at least 30% to resume mission
+    local fuelLevel = 100  -- Default assume full
+    if self.Group and self.Group:IsAlive() then
+      local unit = self.Group:GetUnit(1)
+      if unit then
+        local fuel = unit:GetFuel()
+        fuelLevel = fuel * 100
+        BASE:I(string.format("%s: Current fuel level: %.1f%%", self.Callsign, fuelLevel))
+      end
+    end
+    
+    -- Check distance to target
+    local distanceToTarget = 999
+    if self.BombingWaypoint and self.Group and self.Group:IsAlive() then
+      local currentPos = self.Group:GetCoordinate()
+      distanceToTarget = currentPos:Get2DDistance(self.BombingWaypoint) / 1000  -- km
+      BASE:I(string.format("%s: Distance to target: %.1f km", self.Callsign, distanceToTarget))
+    end
+    
+    -- Resume mission if conditions are favorable
+    if fuelLevel >= 30 and unescortedTime < 300 then
+      local rejoinsRemaining = self.MaxRejoins - self.EscortRejoinCount
+      BASE:I(string.format("%s: DECISION - Resuming mission (fuel=%.1f%%, escort returned, %.1f km to target, %d rejoins remaining)", 
+        self.Callsign, fuelLevel, distanceToTarget, rejoinsRemaining))
+      
+      if rejoinsRemaining > 0 then
+        self:_BroadcastMessage(string.format("%s: ✓ Escort rejoined with %.0f%% fuel remaining! Resuming mission to target. WARNING: %d rejoin%s left before permanent abort!", 
+          self.Callsign, fuelLevel, rejoinsRemaining, rejoinsRemaining == 1 and "" or "s"))
+      else
+        self:_BroadcastMessage(string.format("%s: ✓ Escort rejoined with %.0f%% fuel remaining! Resuming mission. FINAL WARNING: This is your LAST chance - one more loss and we're going home for good!", 
+          self.Callsign, fuelLevel))
+      end
+      
+      -- Stop waypoint monitoring temporarily
+      if self.WaypointMonitor then
+        self.WaypointMonitor:Stop()
+      end
+      
+      -- Resume original route to target
+      if self.OriginalRoute then
+        BASE:I(string.format("%s: Restoring original route with %d waypoints", self.Callsign, #self.OriginalRoute))
+        self.Group:Route(self.OriginalRoute, 1)
+        
+        -- Restart waypoint monitoring
+        self:_MonitorWaypoints()
+      else
+        BASE:E(string.format("%s: ERROR - No original route saved, cannot resume", self.Callsign))
+      end
+      
       self:Takeoff() -- Transition back to ENROUTE
+    else
+      -- Can't resume - insufficient fuel or too long
+      local reason = fuelLevel < 30 and "insufficient fuel" or "too long without escort"
+      BASE:I(string.format("%s: DECISION - Continuing RTB (%s, fuel=%.1f%%)", self.Callsign, reason, fuelLevel))
+      self:_BroadcastMessage(string.format("%s: Escort rejoined but %s (%.0f%% fuel). Continuing RTB.", 
+        self.Callsign, reason, fuelLevel))
     end
   end
 end
@@ -1652,21 +3772,202 @@ end
 --- Escort lost event
 -- @param #BOMBER self
 -- @param #number unescortedTime Seconds without escort
-function BOMBER:OnEscortLost(unescortedTime)
+-- @param #number currentEscortCount Current number of escorts present
+-- @param #boolean hadSufficientEscorts Whether we previously had enough escorts
+function BOMBER:OnEscortLost(unescortedTime, currentEscortCount, hadSufficientEscorts)
   self.HasEscort = false
   
-  if unescortedTime < 30 then
-    -- Just lost escort, send warning
-    self:_BroadcastMessage(string.format("%s: Lost escort contact. Need immediate support!", self.Callsign))
-  elseif unescortedTime < 120 then
-    -- Been a while, getting nervous
-    self:_BroadcastMessage(string.format("%s: No escort for %d seconds. Reducing speed.", 
-      self.Callsign, math.floor(unescortedTime)))
-    -- TODO: Reduce speed
-  else
-    -- Too long, abort mission
+  -- Don't process escort loss if still on the ground waiting to depart
+  if self:Is(BOMBER.States.HOLDING) or self:Is(BOMBER.States.SPAWNED) then
+    BASE:I(string.format("%s: Ignoring escort loss - still on ground in %s state", self.Callsign, self.CurrentState))
+    return
+  end
+  
+  local minRequired = self.Profile.MinEscorts or 1
+  
+  -- Different handling for insufficient vs lost escorts
+  if not hadSufficientEscorts and currentEscortCount > 0 then
+    -- Have some escorts but not enough
+    BASE:I(string.format("%s: Insufficient escorts - have %d, need %d (%.0fs)", 
+      self.Callsign, currentEscortCount, minRequired, unescortedTime))
+    
+    -- Calculate distance to target for appropriate response
+    local distanceToTarget = 999
+    if self.BombingWaypoint and self.Group and self.Group:IsAlive() then
+      local currentPos = self.Group:GetCoordinate()
+      distanceToTarget = currentPos:Get2DDistance(self.BombingWaypoint) / 1000
+    end
+    
+    -- Different behavior based on phase
+    if self:Is(BOMBER.States.HOLDING) or self:Is(BOMBER.States.SPAWNED) then
+      -- On ground - just wait patiently
+      if not self.InsufficientEscortWarning then
+        self:_BroadcastMessage(string.format("%s: Have %d escort%s but need %d minimum. Requesting additional fighters, standing by...", 
+          self.Callsign, currentEscortCount, currentEscortCount > 1 and "s" or "", minRequired))
+        self.InsufficientEscortWarning = true
+      end
+      return  -- Don't process as "lost" - just waiting for more
+      
+    else
+      -- Airborne - insufficient escorts is a threat, apply distance-based thresholds
+      local abortThreshold = 300  -- 5 minutes far from target
+      if distanceToTarget < 30 then
+        abortThreshold = 120  -- 2 minutes near target
+      elseif distanceToTarget < 50 then
+        abortThreshold = 180  -- 3 minutes approaching
+      elseif distanceToTarget < 100 then
+        abortThreshold = 240  -- 4 minutes moderate distance
+      end
+      
+      BASE:I(string.format("%s: Airborne with insufficient escorts - abort threshold %.0fs (%.1f km to target)", 
+        self.Callsign, abortThreshold, distanceToTarget))
+      
+      -- Send initial warning
+      if not self.InsufficientEscortWarning then
+        self:_BroadcastMessage(string.format("%s: ⚠️ Have only %d escort%s, need %d minimum! Requesting additional fighters immediately!", 
+          self.Callsign, currentEscortCount, currentEscortCount > 1 and "s" or "", minRequired))
+        self.InsufficientEscortWarning = true
+      end
+      
+      -- If insufficient for too long, abort
+      if unescortedTime >= abortThreshold then
+        if not self:Is(BOMBER.States.ABORTING) and not self:Is(BOMBER.States.RTB) then
+          BASE:I(string.format("%s: DECISION - ABORT MISSION (insufficient escorts for %.0fs, %.1f km to target)", 
+            self.Callsign, unescortedTime, distanceToTarget))
+          self:_BroadcastMessage(string.format("%s: ❌ INSUFFICIENT ESCORT FOR %d SECONDS! MISSION ABORTED - RETURNING TO BASE!", 
+            self.Callsign, math.floor(unescortedTime)))
+          self:Abort()
+        end
+      end
+      return
+    end
+    
+  elseif currentEscortCount >= minRequired then
+    -- Have enough now, clear the insufficient flag
+    self.InsufficientEscortWarning = false
+  end
+  
+  BASE:I(string.format("%s: Lost escort - unescorted for %.0f seconds (had sufficient: %s)", 
+    self.Callsign, unescortedTime, tostring(hadSufficientEscorts)))
+  
+  -- Don't send warnings/abort if already aborting or RTB (but keep monitor running for rejoin detection)
+  if self:Is(BOMBER.States.ABORTING) or self:Is(BOMBER.States.RTB) then
+    return
+  end
+  
+  -- Calculate distance to target to determine urgency
+  local distanceToTarget = 0
+  local abortThreshold = 120  -- Default 2 minutes
+  local warningThreshold = 30  -- Default 30 seconds
+  local speedReductionThreshold = 60  -- Default 1 minute
+  
+  -- Track which warnings we've already sent to prevent spam
+  if not self.EscortLossWarnings then
+    self.EscortLossWarnings = {
+      initialWarning = false,
+      speedReduction = false,
+    }
+  end
+  
+  if self.BombingWaypoint and self.Group and self.Group:IsAlive() then
+    local currentPos = self.Group:GetCoordinate()
+    local targetPos = self.BombingWaypoint
+    distanceToTarget = currentPos:Get2DDistance(targetPos) / 1000  -- Convert to km
+    
+    -- Scale thresholds based on distance to target
+    -- Far from target (>100km): More lenient, escorts have time to catch up
+    -- Near target (<30km): More urgent, abort quickly if no protection
+    if distanceToTarget > 100 then
+      warningThreshold = 60      -- 1 minute
+      speedReductionThreshold = 180  -- 3 minutes
+      abortThreshold = 300       -- 5 minutes
+    elseif distanceToTarget > 50 then
+      warningThreshold = 45      -- 45 seconds
+      speedReductionThreshold = 120  -- 2 minutes
+      abortThreshold = 240       -- 4 minutes
+    elseif distanceToTarget > 30 then
+      warningThreshold = 30      -- 30 seconds
+      speedReductionThreshold = 90   -- 90 seconds
+      abortThreshold = 180       -- 3 minutes
+    else
+      -- Close to target, need immediate protection
+      warningThreshold = 20      -- 20 seconds
+      speedReductionThreshold = 60   -- 1 minute
+      abortThreshold = 120       -- 2 minutes
+    end
+    
+    BASE:I(string.format("%s: Distance to target: %.1f km - Thresholds: warn=%ds, reduce=%ds, abort=%ds", 
+      self.Callsign, distanceToTarget, warningThreshold, speedReductionThreshold, abortThreshold))
+  end
+  
+  -- Progressive warnings based on thresholds (only send each message once)
+  if unescortedTime < warningThreshold then
+    -- LEVEL 1: Just lost escort, casual check-in (only once)
+    if not self.EscortLossWarnings.initialWarning then
+      local messages = BOMBER.EscortLossMessages.Level1
+      local message = messages[math.random(#messages)]
+      
+      -- Add escort name if we had confirmed escorts
+      if self.LastKnownEscorts and #self.LastKnownEscorts > 0 then
+        local escortName = self.LastKnownEscorts[math.random(#self.LastKnownEscorts)]
+        message = message .. " (" .. escortName .. "?)"
+      end
+      
+      BASE:I(string.format("%s: LEVEL 1 - Casual escort check (recently lost escort)", self.Callsign))
+      self:_BroadcastMessage(string.format("%s: %s", self.Callsign, message))
+      self.EscortLossWarnings.initialWarning = true
+    end
+  elseif unescortedTime < speedReductionThreshold then
+    -- LEVEL 2: Getting concerned - reduce speed and request help (only once)
+    if not self.EscortLossWarnings.speedReduction then
+      local messages = BOMBER.EscortLossMessages.Level2
+      local message = messages[math.random(#messages)]
+      
+      -- Add escort name reference if we had confirmed escorts
+      if self.LastKnownEscorts and #self.LastKnownEscorts > 0 then
+        if #self.LastKnownEscorts == 1 then
+          message = message .. " Lost " .. self.LastKnownEscorts[1] .. "!"
+        else
+          message = message .. " Lost " .. self.LastKnownEscorts[1] .. " and " .. self.LastKnownEscorts[2] .. "!"
+        end
+      end
+      
+      BASE:I(string.format("%s: LEVEL 2 - Concerned, requesting help (%.0fs unescorted, %.1f km to target)", 
+        self.Callsign, unescortedTime, distanceToTarget))
+      self:_BroadcastMessage(string.format("%s: %s", self.Callsign, message))
+      
+      -- Reduce speed (only if airborne)
+      if self.Group and self.Group:IsAlive() then
+        local reducedSpeed = self.Profile.CruiseSpeed * 0.7
+        self.Group:SetSpeed(reducedSpeed * 0.514444) -- Convert knots to m/s
+        BASE:I(string.format("%s: Speed reduced to %.0f knots", self.Callsign, reducedSpeed))
+      else
+        BASE:I(string.format("%s: Cannot reduce speed - not yet airborne", self.Callsign))
+      end
+      self.EscortLossWarnings.speedReduction = true
+    end
+  elseif unescortedTime >= abortThreshold then
+    -- LEVEL 3: Critical - abort mission (state check prevents multiple aborts)
     if not self:Is(BOMBER.States.ABORTING) and not self:Is(BOMBER.States.RTB) then
-      self:_BroadcastMessage(string.format("%s: No escort. Mission aborted, RTB!", self.Callsign))
+      local messages = BOMBER.EscortLossMessages.Level3
+      local message = messages[math.random(#messages)]
+      -- Replace %d with unescorted time if present
+      message = string.format(message, math.floor(unescortedTime))
+      
+      -- Add escort name list if we had confirmed escorts
+      if self.LastKnownEscorts and #self.LastKnownEscorts > 0 then
+        if #self.LastKnownEscorts == 1 then
+          message = message .. " (Lost " .. self.LastKnownEscorts[1] .. ")"
+        elseif #self.LastKnownEscorts == 2 then
+          message = message .. " (Lost " .. self.LastKnownEscorts[1] .. " and " .. self.LastKnownEscorts[2] .. ")"
+        else
+          message = message .. " (Lost " .. table.concat(self.LastKnownEscorts, ", ", 1, 3) .. ")"
+        end
+      end
+      
+      BASE:I(string.format("%s: LEVEL 3 - CRITICAL ABORT (%.0fs unescorted exceeds %.0fs threshold, %.1f km to target)", 
+        self.Callsign, unescortedTime, abortThreshold, distanceToTarget))
+      self:_BroadcastMessage(string.format("%s: %s", self.Callsign, message))
       self:Abort()
     end
   end
@@ -1680,21 +3981,48 @@ function BOMBER:OnThreatDetected(threatData)
   
   local bearing = math.floor(threatData.Bearing)
   local distance = math.floor(threatData.Distance / 1000) -- km
+  local distanceNm = math.floor(threatData.Distance / 1852) -- nautical miles
   
-  self:_BroadcastMessage(string.format("%s: %s threat! Bearing %d, %d km!", 
-    self.Callsign, threatData.Type, bearing, distance))
+  BASE:I(string.format("%s: THREAT DETECTED - %s at bearing %d°, distance %d km (%.1f NM)", 
+    self.Callsign, threatData.Type, bearing, distance, distanceNm))
   
-  -- React based on threat type and escort status
+  self:_BroadcastMessage(string.format("%s: ⚠️ %s THREAT DETECTED! Bearing %03d°, %d nm!", 
+    self.Callsign, threatData.Type, bearing, distanceNm))
+  
+  -- React based on threat type and escort status with crew awareness
   if threatData.Type == BOMBER_THREAT_MANAGER.ThreatType.FIGHTER then
+    BASE:I(string.format("%s: Fighter threat analysis - HasEscort=%s", self.Callsign, tostring(self.HasEscort)))
+    
+    -- Use contextual crew callout
+    self:_CrewAwarenessCallout("threat_fighter")
+    
     if not self.HasEscort then
       -- No escort, abort immediately
-      self:_BroadcastMessage(string.format("%s: Bandits inbound, no escort! ABORTING!", self.Callsign))
-      self:Abort()
+      BASE:I(string.format("%s: DECISION - ABORT due to fighters without escort", self.Callsign))
+      self:_BroadcastMessage(string.format("%s: ❌ BANDITS INBOUND! No escort protection - ABORTING MISSION!", self.Callsign))
+      self:__Abort(0) -- Use FSM transition to properly abort
+    else
+      BASE:I(string.format("%s: DECISION - Continue with escort protection", self.Callsign))
+      -- Crew callout already handled above
     end
   elseif threatData.Type == BOMBER_THREAT_MANAGER.ThreatType.SAM then
-    if threatData.Distance < 20000 then -- Inside SAM range
-      -- TODO: Deploy countermeasures, evasive action
-      self:_BroadcastMessage(string.format("%s: SAM threat close! Deploying countermeasures!", self.Callsign))
+    -- Use contextual crew callout
+    self:_CrewAwarenessCallout("threat_sam")
+    
+    if threatData.Distance < 40000 then -- Inside SAM max range
+      local severity = threatData.Distance < 20000 and "HIGH" or "MEDIUM"
+      BASE:I(string.format("%s: SAM threat analysis - Distance=%d m, Severity=%s", 
+        self.Callsign, math.floor(threatData.Distance), severity))
+      
+      if threatData.Distance < 20000 then -- Inside SAM engagement range
+        BASE:I(string.format("%s: DECISION - Deploy countermeasures (inside SAM range)", self.Callsign))
+        self:_BroadcastMessage(string.format("%s: ⚠️ SAM SITE TRACKING! Distance %d nm - deploying chaff!", 
+          self.Callsign, distanceNm))
+      else
+        BASE:I(string.format("%s: DECISION - Monitor SAM threat (outside engagement range)", self.Callsign))
+        self:_BroadcastMessage(string.format("%s: SAM site detected %d nm out. Monitoring...", 
+          self.Callsign, distanceNm))
+      end
     end
   end
 end
@@ -1703,14 +4031,22 @@ end
 -- @param #BOMBER self
 -- @param #table threatData Threat information
 function BOMBER:OnThreatCleared(threatData)
+  BASE:I(string.format("%s: Threat cleared - %s", self.Callsign, threatData.Type))
+  
   -- Check if any threats remain
   local remainingThreats = self.ThreatManager:GetActiveThreats()
   local count = 0
   for _ in pairs(remainingThreats) do count = count + 1 end
   
+  BASE:I(string.format("%s: Remaining threats: %d", self.Callsign, count))
+  
   if count == 0 then
     self.IsUnderThreat = false
-    self:_BroadcastMessage(string.format("%s: Threats clear. Continuing mission.", self.Callsign))
+    BASE:I(string.format("%s: DECISION - All threats cleared, resuming normal operations", self.Callsign))
+    self:_BroadcastMessage(string.format("%s: ✓ All threats clear. Continuing mission.", self.Callsign))
+  else
+    self:_BroadcastMessage(string.format("%s: One threat cleared. %d threat%s still active.", 
+      self.Callsign, count, count > 1 and "s" or ""))
   end
 end
 
@@ -1718,34 +4054,534 @@ end
 -- @param #BOMBER self
 -- @param #string message The message text
 function BOMBER:_BroadcastMessage(message)
-  trigger.action.outTextForCoalition(self.Coalition, message, 10)
+  BASE:I(string.format("%s: _BroadcastMessage called with: %s (Coalition: %d)", 
+    self.Callsign, message, self.Coalition or -1))
+  
+  -- Use MOOSE MESSAGE for better visibility
+  MESSAGE:New(message, 15):ToCoalition(self.Coalition)
+  
+  BASE:I(string.format("%s: Message sent to coalition %d", self.Callsign, self.Coalition or -1))
+end
+
+--- Handle holding timeout - abort mission and cleanup
+-- @param #BOMBER self
+function BOMBER:_HandleHoldingTimeout()
+  local waitTime = math.floor((timer.getTime() - self.HoldingStartTime) / 60)
+  
+  BASE:I(string.format("%s: Holding timeout - waited %d minutes for escort", self.Callsign, waitTime))
+  
+  -- Send dejected message
+  self:_BroadcastMessage(string.format("%s: We've been waiting on the ramp for %d minutes... No escort showed up. Mission scrubbed. Standing down.", 
+    self.Callsign, waitTime))
+  
+  -- Stop the holding check scheduler
+  if self.HoldingCheck then
+    self.HoldingCheck:Stop()
+    self.HoldingCheck = nil
+  end
+  
+  -- Cleanup escort roster
+  self.EscortRoster = {}
+  self.WaitingForEscortDeparture = nil
+  
+  -- Mark mission as completed (failed)
+  self.MissionCompleted = true
+  self.AbortRequested = true
+  
+  -- Despawn the bomber group
+  if self.Group and self.Group:IsAlive() then
+    BASE:I(string.format("%s: Despawning bomber group due to holding timeout", self.Callsign))
+    self.Group:Destroy()
+  end
+  
+  -- Transition to DESTROYED state for proper cleanup
+  self:__Destroyed(0)
+end
+
+--- FSM State: Holding (waiting for escort on ground)
+-- @param #BOMBER self
+function BOMBER:onenterHolding()
+  BASE:I(string.format("%s: STATE CHANGE - HOLDING (waiting for escort)", self.Callsign))
+  
+  -- Track when we started holding
+  self.HoldingStartTime = timer.getTime()
+  self.LastHoldingAnnounce = self.HoldingStartTime
+  
+  local maxWaitMins = math.floor(self.MaxHoldingTime / 60)
+  local airbaseName = self.StartAirbase or "departure point"
+  self:_BroadcastMessage(string.format("%s: ✈️ On ramp at %s, engines running. Waiting for fighter escort within 1km (%d min max).", 
+    self.Callsign, airbaseName, maxWaitMins))
+  
+  -- Start checking for ground escorts every 10 seconds
+  self.HoldingCheck = SCHEDULER:New(nil, function()
+    if not self:IsAlive() or not self:Is(BOMBER.States.HOLDING) then
+      return
+    end
+    
+    local currentTime = timer.getTime()
+    
+    -- Check for holding timeout (15 minutes)
+    if self.HoldingStartTime and (currentTime - self.HoldingStartTime) > self.MaxHoldingTime then
+      BASE:I(string.format("%s: Holding timeout reached (%.0f seconds) - aborting mission", 
+        self.Callsign, currentTime - self.HoldingStartTime))
+      self:_HandleHoldingTimeout()
+      return
+    end
+    
+    local escortsFound = self:_ScanForGroundEscorts()
+    
+    if escortsFound and #escortsFound > 0 then
+      if not self.WaitingForEscortDeparture then
+        -- First detection - add escorts to roster and announce
+        local escortNames = {}
+        for _, escort in ipairs(escortsFound) do
+          table.insert(escortNames, escort.callsign)
+          self:_AddToEscortRoster(escort.callsign, escort.unit)
+        end
+        
+        local escortList = table.concat(escortNames, ", ")
+        BASE:I(string.format("%s: Ground escorts detected: %s - waiting for them to taxi/take off", self.Callsign, escortList))
+        self:_BroadcastMessage(string.format("%s: ✓ Escort detected: %s. Waiting for escort to begin taxi...", 
+          self.Callsign, escortList))
+        
+        self.WaitingForEscortDeparture = true
+      else
+        -- Check if any escorts are moving (taxiing or airborne)
+        local anyEscortMoving = false
+        for _, escort in ipairs(escortsFound) do
+          local velocity = escort.unit:GetVelocityKNOTS()
+          if velocity > 10 then  -- Moving/taxiing
+            anyEscortMoving = true
+            break
+          end
+        end
+        
+        if anyEscortMoving then
+          -- Escort is following! Begin engine start sequence
+          BASE:I(string.format("%s: Escort is taxiing - beginning engine start", self.Callsign))
+          
+          -- Stop holding check
+          if self.HoldingCheck then
+            self.HoldingCheck:Stop()
+            self.HoldingCheck = nil
+          end
+          
+          -- Start engines (broadcasts "Starting Engines" message)
+          self:_StartRoute()
+          
+          -- Monitor for actual movement before transitioning FSM
+          -- Bomber needs ~6 minutes to complete cold & dark startup
+          self:_MonitorEngineStart()
+        end
+      end
+    else
+      -- No escorts found - announce periodically (every 2 minutes)
+      if currentTime - self.LastHoldingAnnounce >= 120 then
+        local waitedTime = currentTime - self.HoldingStartTime
+        local remainingTime = self.MaxHoldingTime - waitedTime
+        local waitedMins = math.floor(waitedTime / 60)
+        local remainingMins = math.ceil(remainingTime / 60)
+        
+        BASE:I(string.format("%s: Still holding for escort at %s (waited %d min, %d min remaining)", 
+          self.Callsign, airbaseName, waitedMins, remainingMins))
+        self:_BroadcastMessage(string.format("%s: Still waiting for fighter escort at %s. Waited %d min - %d min remaining before mission scrub.", 
+          self.Callsign, airbaseName, waitedMins, remainingMins))
+        self.LastHoldingAnnounce = currentTime
+      end
+      self.WaitingForEscortDeparture = false  -- Reset flag if escorts left
+    end
+    
+  end, {}, 5, 10)  -- Check after 5 seconds, then every 10 seconds
+end
+
+--- Scan for fighter escorts on the ground within 1km with engines running
+-- @param #BOMBER self
+-- @return #table Array of escort data {unit, callsign, distance}
+function BOMBER:_ScanForGroundEscorts()
+  if not self.Group then return {} end
+  
+  local bomberCoord = self.Group:GetCoordinate()
+  if not bomberCoord then return {} end
+  
+  local escorts = {}
+  local GROUND_ESCORT_RANGE = 1000  -- meters
+  
+  -- Scan for coalition fighters
+  local scanSet = SET_UNIT:New()
+    :FilterCoalitions(self.Coalition)
+    :FilterCategories("plane")
+    :FilterOnce()
+  
+  BASE:I(string.format("%s: Scanning for ground escorts within %.0f meters...", self.Callsign, GROUND_ESCORT_RANGE))
+  
+  scanSet:ForEachUnit(function(unit)
+    if unit:IsPlayer() and unit:IsAlive() then
+      local unitType = unit:GetTypeName()
+      
+      -- Check if it's a fighter (use existing escort monitor logic)
+      local isFighter = self:_IsFighterType(unitType)
+      
+      if isFighter then
+        local unitCoord = unit:GetCoordinate()
+        if unitCoord then
+          local distance = bomberCoord:Get2DDistance(unitCoord)
+          local altitude = unit:GetAltitude()
+          local velocity = unit:GetVelocityKNOTS()
+          
+          -- Must be: within 1km, on ground (alt < 50m), engines running (velocity > 0 or just alive)
+          local onGround = altitude < 50
+          local enginesRunning = velocity >= 0  -- If alive and on ground, engines are running
+          
+          if distance <= GROUND_ESCORT_RANGE and onGround then
+            local callsign = unit:GetCallsign() or unit:GetName()
+            table.insert(escorts, {
+              unit = unit,
+              callsign = callsign,
+              distance = distance
+            })
+            BASE:I(string.format("%s: Found ground escort: %s (%s) at %.0fm, alt=%.0fm, vel=%.0fkts", 
+              self.Callsign, callsign, unitType, distance, altitude, velocity))
+          else
+            BASE:I(string.format("%s: Fighter %s not eligible - dist=%.0fm (max 1000m), alt=%.0fm (max 50m), onGround=%s", 
+              self.Callsign, unit:GetCallsign() or unit:GetName(), distance, altitude, tostring(onGround)))
+          end
+        end
+      end
+    end
+  end)
+  
+  BASE:I(string.format("%s: Ground escort scan complete - found %d eligible fighters", self.Callsign, #escorts))
+  return escorts
+end
+
+--- Check if aircraft type is a fighter (not bomber, attacker, or helicopter)
+-- @param #BOMBER self
+-- @param #string typeName Aircraft type name
+-- @return #boolean True if fighter type
+function BOMBER:_IsFighterType(typeName)
+  if not typeName then return false end
+  
+  -- Exclude bomber types
+  local bomberTypes = {
+    ["B-1B"] = true,
+    ["B-52H"] = true,
+    ["Tu-95MS"] = true,
+    ["Tu-160"] = true,
+    ["Tu-22M3"] = true,
+    ["B-17G"] = true,
+    ["B-24"] = true,
+  }
+  
+  -- Exclude attacker/ground attack types
+  local attackerTypes = {
+    ["A-10A"] = true,
+    ["A-10C"] = true,
+    ["A-10C_2"] = true,
+    ["Su-25"] = true,
+    ["Su-25T"] = true,
+    ["Su-25TM"] = true,
+  }
+  
+  if bomberTypes[typeName] or attackerTypes[typeName] then
+    return false
+  end
+  
+  return true
 end
 
 --- FSM State: Enroute
 -- @param #BOMBER self
 function BOMBER:onenterEnroute()
-  self:_BroadcastMessage(string.format("%s: Enroute to target.", self.Callsign))
+  BASE:I(string.format("%s: STATE CHANGE - ENROUTE (flying to target)", self.Callsign))
+  
+  -- Start escort monitoring now that we're actually flying
+  if self.EscortMonitor and not self.EscortMonitor.SchedulerID then
+    BASE:I(string.format("%s: Starting escort monitoring", self.Callsign))
+    self.EscortMonitor:Start()
+  end
+  
+  -- Build spawn location string
+  local spawnLocation = "unknown location"
+  if self.StartAirbase then
+    spawnLocation = self.StartAirbase
+  elseif self.Group then
+    local currentPos = self.Group:GetCoordinate()
+    if currentPos then
+      spawnLocation = currentPos:ToStringLLDMS()
+    end
+  end
+  
+  -- Wait to announce until aircraft are actually airborne
+  SCHEDULER:New(nil, function()
+    if self:IsAlive() then
+      -- Check if actually in the air
+      local velocity = self.Group:GetVelocityKNOTS()
+      local altitude = self.Group:GetAltitude()
+      
+      -- Determine message based on escort requirement
+      local escortMsg = self.Profile.EscortRequired and " - provide escort." or " - proceeding independently."
+      
+      -- If moving and above ground, they're airborne
+      if velocity > 50 and altitude > 100 then
+        self:_BroadcastMessage(string.format("%s: Flight of %d %s airborne from %s. Enroute to target%s", 
+          self.Callsign, self.FlightSize, self.Profile.DisplayName, spawnLocation, escortMsg))
+      else
+        -- Still on ground, check again in 30 seconds
+        SCHEDULER:New(nil, function()
+          -- Check if in any active flight state (not SPAWNED, HOLDING, or terminal states)
+          local inFlight = self:IsAlive() and (
+            self:Is(BOMBER.States.ENGINE_STARTING) or
+            self:Is(BOMBER.States.TAXIING) or
+            self:Is(BOMBER.States.TAKING_OFF) or
+            self:Is(BOMBER.States.CLIMBING) or
+            self:Is(BOMBER.States.CRUISE) or
+            self:Is(BOMBER.States.PRE_ATTACK) or
+            self:Is(BOMBER.States.ATTACKING)
+          )
+          
+          if inFlight then
+            local vel = self.Group:GetVelocityKNOTS()
+            -- Only send message if actually moving (taxiing or airborne)
+            if vel > 5 then
+              self:_BroadcastMessage(string.format("%s: Flight of %d %s departing %s. Enroute to target%s", 
+                self.Callsign, self.FlightSize, self.Profile.DisplayName, spawnLocation, escortMsg))
+            end
+          end
+        end, {}, 30)
+      end
+    end
+  end, {}, 15) -- Wait 15 seconds after entering ENROUTE state before checking
+end
+
+--- FSM State: Engine Starting
+-- @param #BOMBER self
+function BOMBER:onenterEngineStarting()
+  BASE:I(string.format("%s: STATE CHANGE - ENGINE_STARTING (cold start in progress)", self.Callsign))
+  self:_BroadcastMessage(string.format("%s: Starting engines, preparing for departure", self.Callsign))
+  
+  -- Mark engine start time for monitoring
+  self.EngineStartTime = timer.getTime()
+end
+
+--- FSM State: Taxiing
+-- @param #BOMBER self
+function BOMBER:onenterTaxiing()
+  BASE:I(string.format("%s: STATE CHANGE - TAXIING (moving to runway)", self.Callsign))
+  self:_BroadcastMessage(string.format("%s: Taxiing to runway", self.Callsign))
+end
+
+--- FSM State: Blocked
+-- @param #BOMBER self
+function BOMBER:onenterBlocked()
+  BASE:I(string.format("%s: STATE CHANGE - BLOCKED (obstructed on taxiway)", self.Callsign))
+  self:_BroadcastMessage(string.format("%s: ⚠️ Aircraft blocked on taxiway - waiting for clearance...", self.Callsign))
+  
+  -- Track when we entered BLOCKED state for periodic updates
+  self.BlockedStartTime = timer.getTime()
+  self.LastBlockedUpdate = self.BlockedStartTime
+  
+  -- Start periodic blocked status updates (every 60 seconds)
+  self.BlockedStatusScheduler = SCHEDULER:New(nil, function()
+    if not self:Is(BOMBER.States.BLOCKED) then
+      -- No longer blocked, stop scheduler
+      if self.BlockedStatusScheduler then
+        self.BlockedStatusScheduler:Stop()
+        self.BlockedStatusScheduler = nil
+      end
+      return
+    end
+    
+    local currentTime = timer.getTime()
+    local blockedDuration = currentTime - self.BlockedStartTime
+    local blockedMins = math.floor(blockedDuration / 60)
+    local remainingTime = 300 - blockedDuration  -- 5 minutes total before scrub
+    local remainingSecs = math.max(0, math.floor(remainingTime))
+    
+    self:_BroadcastMessage(string.format("%s: Still blocked on taxiway (%d min elapsed, %d sec until mission scrub)", 
+      self.Callsign, blockedMins, remainingSecs))
+    BASE:I(string.format("%s: BLOCKED status update - %.0f seconds elapsed", self.Callsign, blockedDuration))
+    
+  end, {}, 60, 60)  -- First update after 60s, then every 60s
+end
+
+--- FSM State: Leaving Blocked (cleanup)
+-- @param #BOMBER self
+function BOMBER:onleaveBlocked()
+  -- Stop the blocked status scheduler when leaving BLOCKED state
+  if self.BlockedStatusScheduler then
+    BASE:I(string.format("%s: Stopping blocked status updates (leaving BLOCKED state)", self.Callsign))
+    self.BlockedStatusScheduler:Stop()
+    self.BlockedStatusScheduler = nil
+  end
+  self.BlockedStartTime = nil
+  self.LastBlockedUpdate = nil
+end
+
+--- FSM State: Taking Off
+-- @param #BOMBER self
+function BOMBER:onenterTakingOff()
+  BASE:I(string.format("%s: STATE CHANGE - TAKING_OFF (takeoff roll)", self.Callsign))
+  self:_BroadcastMessage(string.format("%s: Taking off", self.Callsign))
+end
+
+--- FSM State: Climbing
+-- @param #BOMBER self
+function BOMBER:onenterClimbing()
+  local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
+  BASE:I(string.format("%s: STATE CHANGE - CLIMBING (climbing to %d ft)", self.Callsign, cruiseAlt))
+  self:_BroadcastMessage(string.format("%s: Climbing to cruise altitude (%d ft)", self.Callsign, cruiseAlt))
+end
+
+--- FSM State: Cruise
+-- @param #BOMBER self
+function BOMBER:onenterCruise()
+  local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
+  BASE:I(string.format("%s: STATE CHANGE - CRUISE (at %d ft, en route to target)", self.Callsign, cruiseAlt))
+  self:_BroadcastMessage(string.format("%s: At cruise altitude, en route to target", self.Callsign))
+  
+  -- Start escort monitoring when at cruise (if required)
+  if self.Profile.EscortRequired and not self.EscortMonitor then
+    self:_StartEscortMonitoring()
+  end
+end
+
+--- FSM State: Pre-Attack
+-- @param #BOMBER self
+function BOMBER:onenterPreAttack()
+  BASE:I(string.format("%s: STATE CHANGE - PRE_ATTACK (approaching target)", self.Callsign))
+  self:_BroadcastMessage(string.format("%s: Approaching target - preparing for attack", self.Callsign))
 end
 
 --- FSM State: Attacking (at target)
 -- @param #BOMBER self
 function BOMBER:onenterAttacking()
-  self:_BroadcastMessage(string.format("%s: At target. Beginning bombing run!", self.Callsign))
+  BASE:I(string.format("%s: STATE CHANGE - ATTACKING (beginning bombing run)", self.Callsign))
   
-  -- Set ROE to weapons free for bombing
-  self.Group:OptionROEWeaponFree()
+  -- Reset attack tracking flags for this run
+  self.WeaponsReleased = false
+  self.ImpactAnnounced = false
+  self.IPRunCount = 0
+  self.LastIPRunTime = timer.getTime()
+  
+  -- Announce attack initiation
+  local attackMessages = {
+    "%s: 📍 IP reached! Commencing attack run - preparing weapons!",
+    "%s: 📍 On target approach! Bombardier, you have control!",
+    "%s: 📍 Target acquired! Beginning bombing run!",
+    "%s: 📍 We're at the IP! Starting attack sequence!",
+    "%s: 📍 Target in sight! Attack run initiated!",
+    "%s: 📍 Attack position! Beginning weapon employment!"
+  }
+  local attackMsg = attackMessages[math.random(#attackMessages)]
+  self:_BroadcastMessage(string.format(attackMsg, self.Callsign))
+  
+  -- Start monitoring IP runs to inform players during setup passes
+  if self.IPRunMonitor then
+    self.IPRunMonitor:Stop()
+  end
+  
+  self.IPRunMonitor = SCHEDULER:New(nil, function()
+    if not self:IsAlive() or not self:Is(BOMBER.States.ATTACKING) then
+      return
+    end
+    
+    -- If still in ATTACKING state but no weapons released yet, we're doing IP runs
+    if not self.WeaponsReleased then
+      local currentTime = timer.getTime()
+      local timeSinceLastAnnounce = currentTime - self.LastIPRunTime
+      
+      -- Announce IP run status every 20 seconds
+      if timeSinceLastAnnounce >= 20 then
+        self.IPRunCount = self.IPRunCount + 1
+        self.LastIPRunTime = currentTime
+        
+        local ipMessages = {
+          "%s: Setting up attack geometry - adjusting for wind and speed.",
+          "%s: Waving off - not aligned with target. Coming around for another pass.",
+          "%s: Calculating bombing solution - need proper attack angle.",
+          "%s: Target acquired, but geometry not ideal. Setting up for better approach.",
+          "%s: Bombardier needs better alignment - repositioning for attack run."
+        }
+        
+        local msg = ipMessages[math.random(#ipMessages)]
+        self:_BroadcastMessage(string.format(msg, self.Callsign))
+        BASE:I(string.format("%s: IP setup pass %d - awaiting proper attack geometry", self.Callsign, self.IPRunCount))
+      end
+    end
+  end, {}, 5, 5) -- Check every 5 seconds
+  
+  -- ROE is already WEAPONS FREE from spawn - bombing tasks in waypoints should execute automatically
+  -- DO NOT override with SetTask as it loses the route geometry and attack heading
+  BASE:I(string.format("%s: At target waypoint - letting embedded bombing task execute", self.Callsign))
+  
+  -- Get current target info for logging
+  if self.Targets and #self.Targets > 0 and self.CurrentTargetIndex <= #self.Targets then
+    local targetData = self.Targets[self.CurrentTargetIndex]
+    local targetCoord = targetData.coordinate
+    local isRunwayTarget = targetData.targetParams and targetData.targetParams.attackType == "RUNWAY"
+    
+    BASE:I(string.format("%s: Target type: %s at %s", 
+      self.Callsign, 
+      isRunwayTarget and "RUNWAY CARPET BOMB" or "POINT TARGET",
+      targetCoord:ToStringLLDMS()))
+      
+    if isRunwayTarget then
+      local attackHeading = targetData.targetParams.heading or 0
+      BASE:I(string.format("%s: Runway attack heading: %.0f°", self.Callsign, attackHeading))
+    end
+  else
+    BASE:E(string.format("%s: No target data available!", self.Callsign))
+  end
+  
+  -- Announce task setup (this is confirmed, the weapon release will be event-driven)
+  SCHEDULER:New(nil, function()
+    if self:IsAlive() and self:Is(BOMBER.States.ATTACKING) and not self.WeaponsReleased then
+      local prepMessages = {
+        "%s: Bomb doors opening - attack computers active!",
+        "%s: Weapons armed - bombardier has the target!",
+        "%s: Target locked - holding formation for release!",
+        "%s: Attack computers engaged - steady on target!",
+        "%s: Weapons system active - preparing for release!"
+      }
+      local prepMsg = prepMessages[math.random(#prepMessages)]
+      self:_BroadcastMessage(string.format(prepMsg, self.Callsign))
+    end
+  end, {}, 3) -- Announce 3 seconds after reaching target
 end
 
 --- FSM State: Egressing (bombs away)
 -- @param #BOMBER self
 function BOMBER:onenterEgressing()
-  self:_BroadcastMessage(string.format("%s: Bombs away! Egressing target area.", self.Callsign))
+  BASE:I(string.format("%s: STATE CHANGE - EGRESSING (leaving target area)", self.Callsign))
   
-  -- Back to hold fire
-  self.Group:OptionROEHoldFire()
+  -- Stop IP run monitoring
+  if self.IPRunMonitor then
+    self.IPRunMonitor:Stop()
+    self.IPRunMonitor = nil
+  end
+  
+  -- Only announce egress if weapons were actually released
+  if self.WeaponsReleased then
+    local egressMessages = {
+      "%s: Egressing target area - maintain escort!",
+      "%s: Breaking off target - heading to egress!",
+      "%s: Target run complete - moving to egress waypoint!",
+      "%s: Clear of target area - continuing mission!"
+    }
+    local msg = egressMessages[math.random(#egressMessages)]
+    self:_BroadcastMessage(string.format(msg, self.Callsign))
+  else
+    -- Weapons weren't released for some reason
+    BASE:E(string.format("%s: Egressing but weapons were never released!", self.Callsign))
+    self:_BroadcastMessage(string.format("%s: ⚠️ Unable to deliver ordnance - egressing target area!", self.Callsign))
+  end
+  
+  -- Keep ROE at WEAPONS FREE in case there are multiple targets or defensive needs
+  BASE:I(string.format("%s: Continuing with ROE=WEAPONS FREE", self.Callsign))
   
   -- Notify mission of completion
   if self.MissionData and self.MissionData.Mission then
+    BASE:I(string.format("%s: Notifying mission manager of SUCCESS", self.Callsign))
     self.MissionData.Mission:Complete(true)
   end
 end
@@ -1753,18 +4589,66 @@ end
 --- FSM State: Aborting
 -- @param #BOMBER self
 function BOMBER:onenterAborting()
-  self:_BroadcastMessage(string.format("%s: ABORTING MISSION!", self.Callsign))
+  BASE:I(string.format("%s: STATE CHANGE - ABORTING (mission abort in progress)", self.Callsign))
+  self:_BroadcastMessage(string.format("%s: ❌ ABORTING MISSION! Returning to base immediately!", self.Callsign))
+  
+  -- Keep escort monitor running to detect if escorts rejoin for mission resumption
+  -- Stop waypoint monitoring temporarily while we set new route
+  if self.WaypointMonitor then
+    self.WaypointMonitor:Stop()
+  end
   
   -- Cancel current route and head home
   if self.StartAirbase then
     local airbase = AIRBASE:FindByName(self.StartAirbase)
     if airbase then
-      self.Group:RouteRTB(airbase)
+      BASE:I(string.format("%s: Routing to RTB airbase: %s", self.Callsign, self.StartAirbase))
+      
+      -- Get current position and airbase position
+      local currentPos = self.Group:GetCoordinate()
+      local airbaseCoord = airbase:GetCoordinate()
+      
+      -- Create direct route to airbase
+      local rtbWaypoints = {}
+      
+      -- Current position as first waypoint
+      table.insert(rtbWaypoints, currentPos:WaypointAirTurningPoint(
+        nil,
+        self.Profile.CruiseSpeed * 1.2,  -- Faster speed for RTB
+        {},
+        "RTB Start"
+      ))
+      
+      -- Airbase as final waypoint with landing task
+      table.insert(rtbWaypoints, airbaseCoord:WaypointAirLanding(
+        self.Profile.CruiseSpeed * 0.8,
+        airbase,
+        {},
+        "RTB Landing"
+      ))
+      
+      -- Route the group
+      self.Group:Route(rtbWaypoints, 1)  -- Start immediately with 1 second delay
+      BASE:I(string.format("%s: RTB route set - %.1f km direct to %s", 
+        self.Callsign, currentPos:Get2DDistance(airbaseCoord) / 1000, self.StartAirbase))
+      
+      -- Transition to RTB state after route is set
+      self:__ReturnToBase(2)
+    else
+      env.warning(string.format("[BOMBER] %s: RTB airbase '%s' not found!", self.Callsign, self.StartAirbase))
+      -- Try generic RTB command as fallback
+      self.Group:RouteRTB()
+      self:__ReturnToBase(2)
     end
+  else
+    BASE:I(string.format("%s: No RTB airbase defined, using closest friendly", self.Callsign))
+    self.Group:RouteRTB()
+    self:__ReturnToBase(2)
   end
   
   -- Notify mission of failure
   if self.MissionData and self.MissionData.Mission then
+    BASE:I(string.format("%s: Notifying mission manager of FAILURE", self.Callsign))
     self.MissionData.Mission:Complete(false)
   end
 end
@@ -1772,13 +4656,29 @@ end
 --- FSM State: RTB
 -- @param #BOMBER self
 function BOMBER:onenterRTB()
-  self:_BroadcastMessage(string.format("%s: Returning to base.", self.Callsign))
+  BASE:I(string.format("%s: STATE CHANGE - RTB (returning to base)", self.Callsign))
+  self:_BroadcastMessage(string.format("%s: RTB - escort appreciated until landing.", self.Callsign))
+  
+  -- Keep escort monitor running to detect if escorts rejoin for mission resumption
 end
 
 --- FSM State: Landed
 -- @param #BOMBER self
 function BOMBER:onenterLanded()
-  self:_BroadcastMessage(string.format("%s: Landed safely. Mission complete.", self.Callsign))
+  BASE:I(string.format("%s: STATE CHANGE - LANDED (mission terminated)", self.Callsign))
+  self:_BroadcastMessage(string.format("%s: ✓ Landed safely. Mission complete - thanks for the escort!", self.Callsign))
+  
+  -- Stop monitors immediately when landed
+  if self.EscortMonitor then
+    BASE:I(string.format("%s: Stopping escort monitor", self.Callsign))
+    self.EscortMonitor:Stop()
+    self.EscortMonitor = nil
+  end
+  
+  if self.WaypointMonitor then
+    self.WaypointMonitor:Stop()
+    self.WaypointMonitor = nil
+  end
   
   -- Clean up after delay
   SCHEDULER:New(nil, function()
@@ -1786,14 +4686,82 @@ function BOMBER:onenterLanded()
   end, {}, 60)
 end
 
+--- Scrub mission due to failure (stuck, timeout, etc) and cleanup all resources
+-- @param #BOMBER self
+-- @param #string reason Reason for scrubbing
+function BOMBER:_ScrubMission(reason)
+  BASE:E(string.format("%s: Mission scrubbed - %s", self.Callsign, reason))
+  
+  -- Stop all monitors
+  if self.HoldingCheck then
+    self.HoldingCheck:Stop()
+    self.HoldingCheck = nil
+  end
+  
+  if self.EngineStartMonitor then
+    self.EngineStartMonitor:Stop()
+    self.EngineStartMonitor = nil
+  end
+  
+  if self.WaypointMonitor then
+    self.WaypointMonitor:Stop()
+    self.WaypointMonitor = nil
+  end
+  
+  if self.EscortMonitor then
+    self.EscortMonitor:Stop()
+    self.EscortMonitor = nil
+  end
+  
+  if self.ThreatManager then
+    self.ThreatManager:Stop()
+    self.ThreatManager = nil
+  end
+  
+  -- Clear escort roster
+  if self.EscortRoster then
+    self.EscortRoster = {}
+  end
+  
+  -- Broadcast final message
+  self:_BroadcastMessage(string.format("%s: ❌ MISSION SCRUBBED - %s", self.Callsign, reason))
+  
+  -- Despawn the bomber group
+  if self.Group and self.Group:IsAlive() then
+    BASE:I(string.format("%s: Despawning bomber group", self.Callsign))
+    self.Group:Destroy()
+  end
+  
+  -- Transition to DESTROYED state
+  if not self:Is(BOMBER.States.DESTROYED) then
+    self:__Destroy(0)
+  end
+  
+  -- Notify mission manager to clean up mission record
+  if _BOMBER_MISSION_MANAGER then
+    _BOMBER_MISSION_MANAGER:OnMissionFailed(self.Coalition, self.Callsign, reason)
+  end
+end
+
 --- Clean up bomber mission
 -- @param #BOMBER self
 function BOMBER:Destroy()
+  -- Stop holding check if active
+  if self.HoldingCheck then
+    self.HoldingCheck:Stop()
+    self.HoldingCheck = nil
+  end
+  
   if self.EscortMonitor then
     self.EscortMonitor:Stop()
   end
   if self.ThreatManager then
     self.ThreatManager:Stop()
+  end
+  
+  -- Clear escort roster to free memory
+  if self.EscortRoster then
+    self.EscortRoster = {}
   end
   
   self:_BroadcastMessage(string.format("%s: Mission terminated.", self.Callsign))
@@ -1817,6 +4785,15 @@ function BOMBER_ESCORT_INIT(options)
   -- Create global marker parser
   _BOMBER_MARKER_SYSTEM = BOMBER_MARKER:New()
   
+  -- Create global mission manager (creates F10 menus)
+  if not _BOMBER_MISSION_MANAGER then
+    _BOMBER_MISSION_MANAGER = BOMBER_MISSION_MANAGER:New()
+    BASE:I("Bomber Mission Manager: ACTIVE")
+    BASE:I("F10 Menus Created:")
+    BASE:I("  - Mission Status (shows active bombers)")
+    BASE:I("  - Quick Start Guide (player help)")
+  end
+  
   BASE:I("Bomber Marker System: ACTIVE")
   BASE:I("Available Bomber Types:")
   local types = BOMBER_PROFILE:ListTypes()
@@ -1825,23 +4802,27 @@ function BOMBER_ESCORT_INIT(options)
   end
   BASE:I("==============================================")
   BASE:I("Place map markers to create bomber missions:")
-  BASE:I("  BOMBER START [airbase]")
-  BASE:I("  BOMBER TARGET [name]")
-  BASE:I("  BOMBER TYPE [aircraft]")
-  BASE:I("  BOMBER SIZE [1-12]")
-  BASE:I("  BOMBER ALT [feet]")
-  BASE:I("  BOMBER SPEED [knots]")
-  BASE:I("  BOMBER ROUTE [waypoint]  (optional, multiple)")
-  BASE:I("  BOMBER EXECUTE          (spawns mission)")
+  BASE:I("  BOMBER1:[Type]:[Size]:FL[Alt]:[Speed]")
+  BASE:I("  BOMBER2-n (optional route waypoints)")
+  BASE:I("  TARGET1:[AttackType]:[Heading]")
+  BASE:I("  TARGET2-n (optional additional targets)")
+  BASE:I("  EGRESS1-n (optional egress waypoints)")
+  BASE:I("  RTB1 (optional return to base point)")
+  BASE:I("")
+  BASE:I("Quick Examples:")
+  BASE:I("  BOMBER1:B-52H")
+  BASE:I("  TARGET1")
+  BASE:I("")
+  BASE:I("  BOMBER1:B-17G:6:FL200:180")
+  BASE:I("  TARGET1:RUNWAY:270")
   BASE:I("")
   BASE:I("After mission complete/failed:")
-  BASE:I("  BOMBER RESPAWN          (repeats last mission)")
+  BASE:I("  RESPAWN1 (repeats last mission)")
   BASE:I("==============================================")
-  BASE:I("In-Flight Commands (F10 Menu):")
-  BASE:I("  - Request Status")
-  BASE:I("  - Recommend Abort")
-  BASE:I("  - Warn: SAM Threat / Bandits")
-  BASE:I("  - Request Speed Changes")
+  BASE:I("F10 Menu Commands:")
+  BASE:I("  - Mission Status (view active bombers)")
+  BASE:I("  - Quick Start Guide (player help)")
+  BASE:I("  - Individual bomber commands (per mission)")
   BASE:I("==============================================")
   BASE:I("Formations: Automatic based on bomber type")
   BASE:I("  WWII: Box formation (tight)")
@@ -1856,12 +4837,17 @@ function BOMBER_ESCORT_INIT(options)
   end
   BASE:I("  (Set Late Activation in mission editor)")
   BASE:I("==============================================")
-  BASE:I("Phase 2 Features: COMPLETE")
-  BASE:I("  ✓ Route flying with waypoints")
-  BASE:I("  ✓ Automated bombing runs")
-  BASE:I("  ✓ F10 player menus")
+  BASE:I("Features:")
+  BASE:I("  ✓ Numbered waypoint system (BOMBER1, TARGET1)")
+  BASE:I("  ✓ Auto-detect spawn airbase from marker")
+  BASE:I("  ✓ Multiple targets in sequence")
+  BASE:I("  ✓ Runway carpet bombing (auto or manual heading)")
+  BASE:I("  ✓ Custom egress routes (EGRESS1-n, RTB1)")
+  BASE:I("  ✓ F10 mission status and guide menus")
   BASE:I("  ✓ Formation management")
   BASE:I("  ✓ Mission respawn system")
+  BASE:I("==============================================")
+  BASE:I("For complete documentation, see MARKER_GUIDE.md")
   BASE:I("==============================================")
 
   
