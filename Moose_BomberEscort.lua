@@ -2929,6 +2929,10 @@ function BOMBER:New(templateName, missionData)
   self.WeaponsReleased = false
   self.ImpactAnnounced = false
   
+  -- Damage tracking
+  self.DamageTracker = nil  -- Initialized on first hit
+  self.CriticalDamageCalled = false
+  
   -- FSM States
   self:SetStartState(BOMBER.States.SPAWNED)
   
@@ -4148,7 +4152,7 @@ function BOMBER:_SetupEventHandlers()
   
   -- Handle weapon impact (for BDA - Battle Damage Assessment)
   self:HandleEvent(EVENTS.Hit, function(self, EventData)
-    -- Check if weapon was fired by our bomber group
+    -- Check if weapon was fired by our bomber group (our bombs hitting target)
     if EventData.IniGroup and EventData.IniGroup:GetName() == self.Group:GetName() then
       if self:Is(BOMBER.States.ATTACKING) or self:Is(BOMBER.States.EGRESSING) then
         -- Announce impact only once per attack run
@@ -4173,7 +4177,246 @@ function BOMBER:_SetupEventHandlers()
         end
       end
     end
+    
+    -- Check if OUR bomber was hit by enemy fire
+    if EventData.TgtGroup and EventData.TgtGroup:GetName() == self.Group:GetName() then
+      self:_HandleDamage(EventData)
+    end
   end)
+  
+  -- Handle bomber destruction
+  self:HandleEvent(EVENTS.Kill, function(self, EventData)
+    if EventData.TgtGroup and EventData.TgtGroup:GetName() == self.Group:GetName() then
+      -- Our bomber unit was killed
+      local unitName = EventData.TgtUnit and EventData.TgtUnit:GetName() or "Unknown"
+      BASE:E(string.format("%s: Unit %s destroyed!", self.Callsign, unitName))
+      
+      -- Check if entire group is dead
+      if not self.Group or not self.Group:IsAlive() or self.Group:GetSize() == 0 then
+        self:_HandleCriticalDamage("destroyed")
+      end
+    end
+  end)
+end
+
+--- Handle bomber taking damage
+-- @param #BOMBER self
+-- @param #table EventData Hit event data
+function BOMBER:_HandleDamage(EventData)
+  -- Initialize damage tracking
+  if not self.DamageTracker then
+    self.DamageTracker = {
+      totalHits = 0,
+      lastHitTime = 0,
+      lastCalloutTime = 0,
+      weaponTypes = {}
+    }
+  end
+  
+  local currentTime = timer.getTime()
+  self.DamageTracker.totalHits = self.DamageTracker.totalHits + 1
+  self.DamageTracker.lastHitTime = currentTime
+  
+  -- Throttle callouts to max once per 15 seconds
+  if currentTime - self.DamageTracker.lastCalloutTime < 15 then
+    return
+  end
+  self.DamageTracker.lastCalloutTime = currentTime
+  
+  -- Identify weapon type
+  local weaponType = "unknown"
+  local weaponName = "Unknown"
+  
+  if EventData.Weapon then
+    local weapon = EventData.Weapon
+    weaponName = weapon:getTypeName() or "Unknown"
+    BASE:I(string.format("%s: Hit by weapon: %s", self.Callsign, weaponName))
+    
+    -- Detect weapon category
+    if weaponName:match("[Ff]lak") or weaponName:match("ZU") or weaponName:match("ZSU") or 
+       weaponName:match("Shilka") or weaponName:match("%d+mm") or weaponName:match("M61") or
+       weaponName:match("Vulcan") or weaponName:match("Gepard") or weaponName:match("2A38") then
+      weaponType = "flak"
+    elseif weaponName:match("SA%-") or weaponName:match("S%-") or weaponName:match("Patriot") or
+           weaponName:match("HAWK") or weaponName:match("Roland") or weaponName:match("Rapier") or
+           weaponName:match("BUK") or weaponName:match("TOR") or weaponName:match("Osa") then
+      weaponType = "sam"
+    elseif weaponName:match("AIM") or weaponName:match("R%-") or weaponName:match("Sidewinder") or
+           weaponName:match("Sparrow") or weaponName:match("AMRAAM") or weaponName:match("Aphid") or
+           weaponName:match("Archer") or weaponName:match("Alamo") then
+      weaponType = "aam"
+    elseif EventData.IniUnit and EventData.IniUnit:IsAir() then
+      weaponType = "fighter_gun"
+    else
+      weaponType = "unknown"
+    end
+  end
+  
+  BASE:I(string.format("%s: Damage type classified as: %s (total hits: %d)", 
+    self.Callsign, weaponType, self.DamageTracker.totalHits))
+  
+  -- Get escort status for contextual messages
+  local escortCount = self.EscortMonitor and self.EscortMonitor.EscortCount or 0
+  local hasEscort = escortCount > 0
+  
+  -- Generate damage callouts based on weapon type
+  local damageMessages = self:_GetDamageMessages(weaponType, hasEscort)
+  local message = damageMessages[math.random(#damageMessages)]
+  
+  self:_BroadcastMessage(string.format("%s: %s", self.Callsign, message))
+  
+  -- Check for critical damage (multiple hits)
+  if self.DamageTracker.totalHits >= 5 then
+    SCHEDULER:New(nil, function()
+      if self:IsAlive() then
+        self:_HandleCriticalDamage(weaponType)
+      end
+    end, {}, 3)
+  end
+end
+
+--- Get context-appropriate damage messages
+-- @param #BOMBER self
+-- @param #string weaponType Type of weapon ("flak", "sam", "aam", "fighter_gun", "unknown")
+-- @param #boolean hasEscort Whether bomber has escort support
+-- @return #table Array of possible messages
+function BOMBER:_GetDamageMessages(weaponType, hasEscort)
+  local messages = {}
+  
+  if weaponType == "flak" then
+    if hasEscort then
+      messages = {
+        "Taking flak! Escorts, suppress that AAA!",
+        "Flak burst! We're hit! Escorts, find that gun!",
+        "Taking heavy flak! Need that AAA silenced!",
+        "[COPILOT] We're taking flak! [PILOT] Escorts, where's that coming from?",
+        "Flak hit! [FLIGHT ENGINEER] Checking damage! [PILOT] Stay on target!"
+      }
+    else
+      messages = {
+        "Taking flak! No escort coverage!",
+        "Flak burst and no escorts! We're sitting ducks!",
+        "Heavy flak! Where are our fighters?!",
+        "[COPILOT] Taking flak! [PILOT] No escort! Get us out of here!",
+        "Flak damage! We need fighters NOW!"
+      }
+    end
+    
+  elseif weaponType == "sam" then
+    if hasEscort then
+      messages = {
+        "SAM hit! We're damaged! Escorts, find that launcher!",
+        "Missile impact! [FLIGHT ENGINEER] Systems failing! [PILOT] Escorts, nail that SAM!",
+        "SAM strike! Need immediate SEAD support!",
+        "Surface-to-air hit! Escorts, suppress that site!",
+        "[COPILOT] SAM hit us! [PILOT] Escorts, take out that launcher!"
+      }
+    else
+      messages = {
+        "SAM hit! No fighter support! We're in trouble!",
+        "Missile strike and no escorts! We're exposed!",
+        "SAM damage! Where are the fighters?!",
+        "[COPILOT] SAM HIT! [PILOT] No escort! Emergency RTB!",
+        "Surface-to-air missile! No SEAD support! Aborting!"
+      }
+    end
+    
+  elseif weaponType == "aam" then
+    if hasEscort then
+      messages = {
+        "Air-to-air hit! Bandits on us! Escorts, engage!",
+        "Missile from fighter! [COPILOT] We're hit! [PILOT] Escorts, get them off us!",
+        "Enemy missile impact! Escorts, where are they?!",
+        "Fighter missile strike! Need immediate assistance!",
+        "[FLIGHT ENGINEER] Air-to-air hit! [PILOT] Escorts, engage those bandits!"
+      }
+    else
+      messages = {
+        "FIGHTER MISSILE! NO ESCORT! WE'RE DEAD!",
+        "Air-to-air hit! No escorts! MAYDAY!",
+        "Enemy missile and no support! We're done for!",
+        "[COPILOT] MISSILE HIT! [PILOT] NO FIGHTERS! MAYDAY MAYDAY!",
+        "Fighter attack! No escort! Emergency emergency!"
+      }
+    end
+    
+  elseif weaponType == "fighter_gun" then
+    if hasEscort then
+      messages = {
+        "Taking cannon fire! Bandits on our six! Escorts, break them off!",
+        "Fighter attack! Gun hits! Escorts, engage!",
+        "[COPILOT] Fighters shooting us! [PILOT] Escorts, get them!",
+        "Under fighter attack! Escorts, we need help NOW!",
+        "Cannon hits! Where are our escorts?!"
+      }
+    else
+      messages = {
+        "FIGHTERS ATTACKING! NO ESCORT! WE'RE EXPOSED!",
+        "Taking cannon fire with no support! MAYDAY!",
+        "Fighter attack! No escorts! We're defenseless!",
+        "[COPILOT] FIGHTERS! [PILOT] NO ESCORT! BREAK BREAK!",
+        "Gun attack! No fighters to help! Critical situation!"
+      }
+    end
+    
+  else
+    -- Generic damage
+    if hasEscort then
+      messages = {
+        "We're hit! Taking damage!",
+        "[COPILOT] We're hit! [FLIGHT ENGINEER] Checking systems!",
+        "Taking fire! Escorts, cover us!",
+        "Damage sustained! Need support!",
+        "We're under attack! Escorts, help!"
+      }
+    else
+      messages = {
+        "WE'RE HIT! No escort!",
+        "Taking damage with no support!",
+        "[COPILOT] WE'RE HIT! [PILOT] No escort! RTB NOW!",
+        "Under fire! No fighters! Emergency!",
+        "Damage! No escort coverage! Aborting!"
+      }
+    end
+  end
+  
+  return messages
+end
+
+--- Handle critical damage / going down
+-- @param #BOMBER self
+-- @param #string cause Cause of critical damage
+function BOMBER:_HandleCriticalDamage(cause)
+  if self.CriticalDamageCalled then
+    return  -- Only call once
+  end
+  self.CriticalDamageCalled = true
+  
+  BASE:E(string.format("%s: CRITICAL DAMAGE - %s", self.Callsign, cause))
+  
+  local criticalMessages = {
+    "MAYDAY MAYDAY MAYDAY! We're going down!",
+    "[COPILOT] WE'RE LOSING IT! [PILOT] MAYDAY! Aircraft breaking apart!",
+    "CRITICAL DAMAGE! We can't stay airborne! Going down!",
+    "Engines failing! We're going down! MAYDAY MAYDAY!",
+    "[FLIGHT ENGINEER] FIRE IN THE FUSELAGE! [PILOT] BAIL OUT BAIL OUT!",
+    "We're done for! Aircraft is falling! MAYDAY!",
+    "Can't maintain altitude! We're going down! MAYDAY MAYDAY!",
+    "[COPILOT] LOSING CONTROL! [PILOT] Crew prepare to bail out!",
+    "CATASTROPHIC DAMAGE! We're not gonna make it! MAYDAY!",
+    "Aircraft breaking up! Going down! Good luck everyone!"
+  }
+  
+  local message = criticalMessages[math.random(#criticalMessages)]
+  self:_BroadcastMessage(string.format("%s: %s", self.Callsign, message))
+  
+  -- If still somehow alive after 10 seconds, force abort
+  SCHEDULER:New(nil, function()
+    if self:IsAlive() and not self:Is(BOMBER.States.RTB) and not self:Is(BOMBER.States.ABORTING) then
+      BASE:I(string.format("%s: Critical damage - forcing abort", self.Callsign))
+      self:Abort()
+    end
+  end, {}, 10)
 end
 
 --- Add fighter to escort roster with memory management
