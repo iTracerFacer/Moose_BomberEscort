@@ -5283,7 +5283,9 @@ end
 -- @param #BOMBER self
 function BOMBER:onenterEngineStarting()
   BASE:I(string.format("%s: STATE CHANGE - ENGINE_STARTING (cold start in progress)", self.Callsign))
-  self:_BroadcastMessage(string.format("%s: Starting engines, preparing for departure", self.Callsign))
+  local targetName = self.TargetName or "target"
+  self:_BroadcastMessage(string.format("%s: Starting engines. Mission brief: %s, routing via climb-optimized waypoints.", 
+    self.Callsign, targetName))
   
   -- Mark engine start time for monitoring
   self.EngineStartTime = timer.getTime()
@@ -5293,7 +5295,9 @@ end
 -- @param #BOMBER self
 function BOMBER:onenterTaxiing()
   BASE:I(string.format("%s: STATE CHANGE - TAXIING (moving to runway)", self.Callsign))
-  self:_BroadcastMessage(string.format("%s: Taxiing to runway", self.Callsign))
+  local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
+  self:_BroadcastMessage(string.format("%s: Taxiing to runway. Route planned for safe altitude management to %d ft.", 
+    self.Callsign, cruiseAlt))
 end
 
 --- FSM State: Blocked
@@ -5350,7 +5354,9 @@ end
 -- @param #BOMBER self
 function BOMBER:onenterTakingOff()
   BASE:I(string.format("%s: STATE CHANGE - TAKING_OFF (takeoff roll)", self.Callsign))
-  self:_BroadcastMessage(string.format("%s: Taking off", self.Callsign))
+  local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
+  self:_BroadcastMessage(string.format("%s: Rolling. Route optimized for climb profile - we'll turn direct to target once at %d ft. Stay close!", 
+    self.Callsign, cruiseAlt))
 end
 
 --- FSM State: Climbing
@@ -5358,7 +5364,8 @@ end
 function BOMBER:onenterClimbing()
   local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
   BASE:I(string.format("%s: STATE CHANGE - CLIMBING (climbing to %d ft)", self.Callsign, cruiseAlt))
-  self:_BroadcastMessage(string.format("%s: Climbing to cruise altitude (%d ft)", self.Callsign, cruiseAlt))
+  self:_BroadcastMessage(string.format("%s: Climbing to %d ft via staged waypoints. Direct target routing once at altitude.", 
+    self.Callsign, cruiseAlt))
 end
 
 --- FSM State: Cruise
