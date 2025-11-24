@@ -39,10 +39,12 @@ BOMBER_ESCORT_CONFIG = {
   EscortCloseRange = 5000,             -- Meters - Definite escort range (default: 1km)
   EscortMediumRange = 10000,            -- Meters - Probable escort range (default: 5km)
   EscortMaxRange = 20000,              -- Meters - Maximum detection range (default: 20km)
+  EscortFormationRange = 250,          -- Meters - Tight formation range for compliments (default: 250m)
   EscortHeadingTolerance = 45,         -- Degrees - Max heading difference for confirmed escort (default: 45°)
   EscortAltitudeTolerance = 5000,      -- Feet - Max altitude difference for confirmed escort (default: 5000ft)
   EscortVelocityTolerance = 100,       -- Knots - Max speed difference for confirmed escort (default: 100kts)
   EscortHistoryDuration = 30,          -- Seconds - Track escort position/heading history (default: 30s)
+  EscortFormationComplimentInterval = 180, -- Seconds between formation flying compliments (default: 180s = 3 minutes)
   
   -- Threat Detection
   SAMThreatDistance = 25000,           -- Meters - SAM detection range (default: 25km)
@@ -55,7 +57,13 @@ BOMBER_ESCORT_CONFIG = {
   
   -- Default Mission Parameters (used when not specified in markers)
   DefaultAltitude = 25000,             -- Feet (default: 25000)
-  DefaultSpeed = 350,                  -- Knots (default: 350)
+  DefaultSpeed = 450,                  -- Knots (default: 350)
+
+  -- RTB/Landing Recovery Fallbacks
+  RTBLandingStuckDistance = 8000,      -- Meters - consider the landing leg "stuck" if farther than this from runway on final WP
+  RTBLandingStuckTime = 90,            -- Seconds - time allowed to loiter on the landing leg before forcing a land task
+  RTBLandingSnapshotInterval = 15,     -- Seconds - minimum interval between repeated landing debug snapshots (set lower for more spam)
+  RTBLandingDespawnDelaySeconds = 60, -- Optional - auto-despawn bomber this many seconds after a landing fallback if it still hasn't landed
 }
 
 ---
@@ -960,6 +968,11 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     BASE:I(string.format("%s: Bomber not yet airborne - skipping escort roster updates", self.Bomber.Callsign))
   end
   
+  -- Check for tight formation flying and send compliments
+  if bomberAirborne then
+    self:_CheckFormationFlying(escortsFound, currentTime)
+  end
+  
   -- Check if escort is required for this bomber
   local escortRequired = self.Bomber.Profile.EscortRequired
   
@@ -1148,9 +1161,16 @@ function BOMBER_ESCORT_MONITOR:_ClassifyEscort(escortUnit, distance)
   }
   
   -- Classification logic with config thresholds
-  local closeRange = BOMBER_ESCORT_CONFIG.EscortCloseRange
-  local mediumRange = BOMBER_ESCORT_CONFIG.EscortMediumRange
-  local maxRange = BOMBER_ESCORT_CONFIG.EscortMaxRange
+  -- During CLIMBING phase, double all distance thresholds to allow formation assembly
+  local rangeMultiplier = 1.0
+  if self.Bomber:Is(BOMBER.States.CLIMBING) then
+    rangeMultiplier = 2.0
+    BASE:I(string.format("%s: CLIMBING phase - using 2x escort detection ranges", self.Bomber.Callsign))
+  end
+  
+  local closeRange = BOMBER_ESCORT_CONFIG.EscortCloseRange * rangeMultiplier
+  local mediumRange = BOMBER_ESCORT_CONFIG.EscortMediumRange * rangeMultiplier
+  local maxRange = BOMBER_ESCORT_CONFIG.EscortMaxRange * rangeMultiplier
   local headingTol = BOMBER_ESCORT_CONFIG.EscortHeadingTolerance
   local altTol = BOMBER_ESCORT_CONFIG.EscortAltitudeTolerance
   local speedTol = BOMBER_ESCORT_CONFIG.EscortVelocityTolerance
@@ -1159,6 +1179,11 @@ function BOMBER_ESCORT_MONITOR:_ClassifyEscort(escortUnit, distance)
   -- Ground escorts don't need heading/speed matching since they're taxiing
   local bomberOnGround = bomberAltitude < 100
   local escortOnGround = escortAltitude < 100
+  
+  -- If escort is on ground but bomber is airborne, escort cannot provide protection
+  if escortOnGround and escortVelocity < 10 and not bomberOnGround then
+    return "unrelated", details
+  end
   
   if bomberOnGround and escortOnGround and distance <= closeRange then
     return "confirmed", details
@@ -1196,6 +1221,91 @@ function BOMBER_ESCORT_MONITOR:_ClassifyEscort(escortUnit, distance)
   
   -- UNRELATED: Too far away
   return "unrelated", details
+end
+
+--- Check for tight formation flying and send compliments
+-- @param #BOMBER_ESCORT_MONITOR self
+-- @param #table escortsFound Table of detected escorts with distance/details
+-- @param #number currentTime Current mission time
+function BOMBER_ESCORT_MONITOR:_CheckFormationFlying(escortsFound, currentTime)
+  local formationRange = BOMBER_ESCORT_CONFIG.EscortFormationRange
+  local complimentInterval = BOMBER_ESCORT_CONFIG.EscortFormationComplimentInterval
+  
+  -- Initialize tracking table if needed
+  if not self.FormationFlyingTracker then
+    self.FormationFlyingTracker = {}
+  end
+  
+  -- Check each escort for tight formation flying
+  for unitName, data in pairs(escortsFound) do
+    local distance = data.Distance
+    local details = data.Details
+    
+    -- Check if escort is in tight formation (within 250m and matching flight parameters)
+    if distance <= formationRange then
+      -- Require tight tolerances for formation flying compliment
+      local headingMatch = details.headingDiff <= 15  -- Within 15 degrees
+      local altMatch = details.altDiff <= 500         -- Within 500 feet
+      local speedMatch = details.speedDiff <= 30      -- Within 30 knots
+      
+      if headingMatch and altMatch and speedMatch then
+        -- Initialize tracker for this escort if needed
+        if not self.FormationFlyingTracker[unitName] then
+          self.FormationFlyingTracker[unitName] = {
+            startTime = currentTime,
+            lastComplimentTime = 0,
+            inFormation = true
+          }
+          BASE:I(string.format("%s: %s entered tight formation (%.0fm)", 
+            self.Bomber.Callsign, data.Unit:GetCallsign() or unitName, distance))
+        end
+        
+        local tracker = self.FormationFlyingTracker[unitName]
+        local formationDuration = currentTime - tracker.startTime
+        local timeSinceLastCompliment = currentTime - tracker.lastComplimentTime
+        
+        -- Send compliment if they've been in formation for at least 3 minutes
+        -- and we haven't complimented them in the last 3 minutes
+        if formationDuration >= complimentInterval and timeSinceLastCompliment >= complimentInterval then
+          local messages = BOMBER.FormationCompliments
+          local message = messages[math.random(#messages)]
+          local callsign = data.Unit:GetCallsign() or unitName
+          
+          self.Bomber:_BroadcastMessage(string.format("%s: %s (%s)", 
+            self.Bomber.Callsign, message, callsign))
+          
+          tracker.lastComplimentTime = currentTime
+          
+          BASE:I(string.format("%s: Formation compliment sent to %s (%.0fm, %.0f min in formation)", 
+            self.Bomber.Callsign, callsign, distance, formationDuration/60))
+        end
+      else
+        -- Not matching parameters well enough, reset tracker
+        if self.FormationFlyingTracker[unitName] then
+          BASE:I(string.format("%s: %s no longer in tight formation (hdg:%s alt:%s spd:%s)", 
+            self.Bomber.Callsign, data.Unit:GetCallsign() or unitName,
+            tostring(headingMatch), tostring(altMatch), tostring(speedMatch)))
+          self.FormationFlyingTracker[unitName] = nil
+        end
+      end
+    else
+      -- Too far for formation flying, clear tracker
+      if self.FormationFlyingTracker[unitName] then
+        BASE:I(string.format("%s: %s moved out of formation range (%.0fm > %dm)", 
+          self.Bomber.Callsign, data.Unit:GetCallsign() or unitName, distance, formationRange))
+        self.FormationFlyingTracker[unitName] = nil
+      end
+    end
+  end
+  
+  -- Clean up trackers for escorts no longer detected
+  for unitName, tracker in pairs(self.FormationFlyingTracker) do
+    if not escortsFound[unitName] then
+      BASE:I(string.format("%s: %s no longer detected, removing formation tracker", 
+        self.Bomber.Callsign, unitName))
+      self.FormationFlyingTracker[unitName] = nil
+    end
+  end
 end
 
 --- Get current escort status
@@ -1879,11 +1989,34 @@ function BOMBER_MISSION:_BuildRoute()
   
   table.insert(waypoints, startCoord:WaypointAirTakeOffParking())
   
-  -- Waypoint 2: Climb to cruise altitude
-  local climbCoord = startCoord:Translate(10000, 0):SetAltitude(cruiseAltMeters)
-  table.insert(waypoints, climbCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+  -- Waypoint 2+: Gradual climb to cruise altitude
+  -- Create a realistic climb profile based on aircraft performance
+  -- Modern jets: ~3-4 degrees climb angle, WWII bombers: ~1-2 degrees
+  local isModern = (self.BomberType == "B-52H" or self.BomberType == "B-1B" or 
+                    self.BomberType == "Tu-95MS" or self.BomberType == "Tu-22M3")
+  local climbAngleDeg = isModern and 3.5 or 1.5  -- Degrees
+  local climbAngleRad = math.rad(climbAngleDeg)
   
-  -- Waypoint 3+: Route waypoints (BOMBER2, BOMBER3, etc.)
+  -- Calculate distance needed to reach cruise altitude at this angle
+  -- distance = altitude / tan(angle)
+  local climbDistanceMeters = cruiseAltMeters / math.tan(climbAngleRad)
+  
+  -- Add intermediate climb waypoints every 20km to ensure smooth climb
+  local climbStepDistance = 20000  -- 20km between waypoints
+  local numClimbSteps = math.max(1, math.floor(climbDistanceMeters / climbStepDistance))
+  
+  BASE:I(string.format("Climb profile: %.1f° angle over %.0f km in %d steps", 
+    climbAngleDeg, climbDistanceMeters/1000, numClimbSteps))
+  
+  for i = 1, numClimbSteps do
+    local stepDistance = (climbDistanceMeters / numClimbSteps) * i
+    local stepAltitude = (cruiseAltMeters / numClimbSteps) * i
+    local climbCoord = startCoord:Translate(stepDistance, 0):SetAltitude(stepAltitude)
+    table.insert(waypoints, climbCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+    BASE:I(string.format("Climb waypoint %d: %.0f km, %.0f ft", i, stepDistance/1000, stepAltitude/0.3048))
+  end
+  
+  -- Waypoint N+: Route waypoints (BOMBER2, BOMBER3, etc.)
   for _, waypointData in ipairs(self.RouteWaypoints) do
     -- RouteWaypoints contains {coordinate=COORDINATE, sequence=number}
     local wpCoord = waypointData.coordinate:SetAltitude(cruiseAltMeters)
@@ -2064,7 +2197,8 @@ function BOMBER_MISSION:_BuildRoute()
                 attackQty = 10, -- Up to 10 passes
                 directionEnabled = true,
                 direction = math.rad(attackHeading), -- DCS uses radians
-                altitudeEnabled = false,
+                altitudeEnabled = true,
+                altitude = cruiseAltMeters,
                 weaponType = 1073741822 -- Auto-select bombs (ENUMS.WeaponFlag.AutoDCS)
               }
             }
@@ -2098,7 +2232,8 @@ function BOMBER_MISSION:_BuildRoute()
                 attackQtyLimit = false,
                 attackQty = attackQty,
                 directionEnabled = false,
-                altitudeEnabled = false,
+                altitudeEnabled = true,
+                altitude = cruiseAltMeters,
                 weaponType = 2032, -- General purpose bombs
                 expend = expend,
                 groupAttack = true
@@ -2609,6 +2744,127 @@ BOMBER.EscortLossMessages = {
   }
 }
 
+--- Formation flying compliment messages (when escort flies tight formation)
+BOMBER.FormationCompliments = {
+  -- Professional/Military Lingo
+  "Nice flying, you're looking good out there.",
+  "Solid formation flying, escort. Five by five.",
+  "Good position, escort. Right where I need you.",
+  "Textbook formation flying. Well done.",
+  "You're dialed in, escort. Appreciate the precision.",
+  "That's some professional flying right there.",
+  "Copy that formation. You're looking sharp.",
+  "Excellent positioning, escort. Couldn't ask for better.",
+  "You're locked in tight, good work.",
+  "Perfect escort position. Outstanding flying.",
+  "Rock steady on the wing. Impressive.",
+  "You've got the touch, escort. Beautiful flying.",
+  "That's how it's done. Smooth as silk.",
+  "Textbook positioning. Someone trained you well.",
+  "You make this look easy, escort.",
+  "Holding formation like a pro. Nice work.",
+  "Steady as she goes. Good flying, escort.",
+  "Right in the sweet spot. Well positioned.",
+  "You're welded to my wing. Great job.",
+  "Perfect spacing. That's professional flying.",
+  
+  -- Encouraging/Friendly
+  "Hey, you're pretty good at this!",
+  "Now THAT'S what I call an escort!",
+  "You been practicing? That's smooth flying!",
+  "I feel safer already with you on my wing.",
+  "Stick around, you're doing great!",
+  "Now I know why they sent you - solid flying!",
+  "You make my job easier, nice work!",
+  "I'd fly with you any day. Good stuff!",
+  "Keep it up, you're nailing this formation thing.",
+  "This is what good escort flying looks like!",
+  "You're a natural at this, escort.",
+  "Finally, someone who knows how to fly formation!",
+  "You've done this before, haven't you?",
+  "Glad to have you on my wing today.",
+  "You're making me look good out here!",
+  
+  -- Light Humor
+  "Don't scratch the paint! ...Just kidding, nice flying.",
+  "Easy there, you're making me nervous! Actually, you're doing great.",
+  "You trying to count my rivets? Ha! Good formation work.",
+  "I can almost shake your hand from here. Nice and tight!",
+  "Careful, any closer and I'll charge you rent!",
+  "You're so close I can see what you had for breakfast!",
+  "Wow, personal space much? Just kidding - good position.",
+  "I was gonna wave but you might take it as a signal!",
+  "You park this well at the BX too?",
+  "Formation this tight should be illegal. Great job!",
+  "My copilot thinks you're too close. I think you're perfect.",
+  "Don't sneeze or we're both going down! Kidding - nice work.",
+  "You're closer than my shadow. Impressive!",
+  "If we were any closer we'd be carpooling!",
+  "My crew chief is gonna ask about the wingtip wear. Worth it!",
+  
+  -- Humorous/Cocky
+  "Show off! But seriously, nice formation flying.",
+  "Trying to make the rest of the flight jealous?",
+  "Easy Maverick, save some skill for the bandits!",
+  "You auditioning for the Blues? Because that's tight!",
+  "Someone's been watching too much Top Gun. Keep it up!",
+  "Careful, the other escorts might get jealous!",
+  "You planning on moving in permanently?",
+  "My wingman's taking notes. You're making them look bad!",
+  "That's either really good flying or really bad judgment!",
+  "You must be fun at airshows!",
+  "Okay hotshot, I'm impressed.",
+  "Are you TRYING to make this look easy?",
+  "Look at you, flying like you own the sky!",
+  "Someone's showing off their academy training!",
+  
+  -- Mo-Related Jokes
+  "Now THAT'S precision! Mo could learn a thing or two from you.",
+  "Wish Mo could fly formation like this instead of... whatever he does.",
+  "You're way better at this than Mo. And we've needed these bombers because he can't hit anything!",
+  "If Mo flew this tight we wouldn't need bombers at all. But here we are.",
+  "Nice flying! Unlike Mo, you actually know where your aircraft ends!",
+  "Good thing you're escorting and not Mo. He'd probably escort the wrong bomber.",
+  "This is why we like you and not Mo on escort duty!",
+  "See, THIS is formation flying. Mo thinks formation means 'generally the same direction.'",
+  "Mo couldn't hold this position if his flight computer did it for him!",
+  "Perfect formation! Mo would've hit me by now.",
+  "You make this look easy. Mo makes it look like a near-death experience.",
+  "That's some skill! We brought the bombers because Mo can't hit anything in his F-4.",
+  "If Mo flew like you, we could've taken Cessnas to the target!",
+  "Beautiful flying! Mo would be 5 miles out wondering where I went.",
+  "You're so good at this. Mo would've run out of fuel trying to find me.",
+  "This is textbook! Mo's textbook had half the pages missing.",
+  "Great job! We only need these bombers because Mo's aim is... questionable.",
+  "Now that's how it's done! Mo would've winged me and called it 'close air support.'",
+  "You've got the touch! Mo's got... well, Mo's got problems.",
+  "Solid work, escort! Unlike Mo, you know which end of the jet goes forward!",
+    
+  -- More Professional Variations  
+  "Maintain that position, you're doing excellent.",
+  "Good stick work, escort. Keep it up.",
+  "That's the kind of flying I like to see.",
+  "You're tracking perfectly. Well done.",
+  "Smooth flying, escort. I'm impressed.",
+  "That's some confident flying right there.",
+  "You've got good situational awareness. Nice job.",
+  "Steady and reliable. That's what I need.",
+  "Professional work, escort. Appreciate it.",
+  "You're a credit to your squadron.",
+  
+  -- Additional Humor
+  "We should get 'Just Married' signs for our aircraft!",
+  "At this distance I can critique your panel layout!",
+  "You're in my bubble! ...And I'm okay with that.",
+  "Hope you like my paint scheme, you're seeing a lot of it!",
+  "This close and you haven't complained about my flying? Keeper!",
+  "My navigator wants your autograph after this!",
+  "Formation so tight we're practically holding hands!",
+  "You fly this close to your wife? Impressive commitment!",
+  "Any tighter and we'd need a marriage certificate!",
+  "The ground crew's gonna think we kissed up here!"
+}
+
 --- Create new bomber mission
 -- @param #BOMBER self
 -- @param #string templateName The spawn template group name
@@ -2644,6 +2900,8 @@ function BOMBER:New(templateName, missionData)
   self.HasEscort = false
   self.IsUnderThreat = false
   self.AbortRequested = false
+  self.AllowEscortResume = true
+  self.ResumeLockReason = nil
   self.MissionStartTime = nil
   self.MissionCompleted = false
   self.EscortRejoinCount = 0  -- Track how many times escorts have rejoined after leaving
@@ -2655,6 +2913,9 @@ function BOMBER:New(templateName, missionData)
   -- Holding timeout tracking
   self.HoldingStartTime = nil  -- When we entered HOLDING state
   self.MaxHoldingTime = 900  -- 15 minutes in seconds
+  
+  -- Blockage tracking
+  self.PreBlockedState = nil  -- Track which state we were in before getting blocked
   
   -- Escort roster tracking with memory management
   self.EscortRoster = {}  -- Table of escort callsigns: {callsign = {unit, joinTime, lastSeen, classification, details, positionHistory}}
@@ -2677,10 +2938,9 @@ function BOMBER:New(templateName, missionData)
   self:AddTransition(BOMBER.States.HOLDING, "StartEngines", BOMBER.States.ENGINE_STARTING)  -- From holding when escort ready
   self:AddTransition(BOMBER.States.ENGINE_STARTING, "BeginTaxi", BOMBER.States.TAXIING)
   self:AddTransition(BOMBER.States.TAXIING, "Blocked", BOMBER.States.BLOCKED)  -- Transition when stuck
-  self:AddTransition(BOMBER.States.BLOCKED, "ClearBlockage", BOMBER.States.TAXIING)  -- Resume when clear
+  self:AddTransition(BOMBER.States.BLOCKED, "ClearBlockage", BOMBER.States.TAXIING)  -- Resume when clear (let normal progression handle takeoff)
   self:AddTransition(BOMBER.States.TAXIING, "Takeoff", BOMBER.States.TAKING_OFF)
   self:AddTransition(BOMBER.States.TAKING_OFF, "Blocked", BOMBER.States.BLOCKED)  -- Can get stuck during takeoff roll too
-  self:AddTransition(BOMBER.States.BLOCKED, "ClearBlockage", BOMBER.States.TAKING_OFF)  -- Resume takeoff when clear
   self:AddTransition(BOMBER.States.TAKING_OFF, "BeginClimb", BOMBER.States.CLIMBING)
   self:AddTransition(BOMBER.States.CLIMBING, "ReachCruise", BOMBER.States.CRUISE)
   self:AddTransition(BOMBER.States.CRUISE, "ApproachTarget", BOMBER.States.PRE_ATTACK)
@@ -2941,12 +3201,12 @@ function BOMBER:_MonitorEngineStart()
     
     -- Send status updates every 90 seconds during long startup
     if self:Is(BOMBER.States.ENGINE_STARTING) and currentTime - lastStatusTime >= 90 then
+      lastStatusTime = currentTime  -- Update BEFORE sending to prevent double-send
       local elapsedMins = math.floor(elapsedTime / 60)
       self:_BroadcastMessage(string.format("%s: Still completing startup procedures (%d min elapsed)...", 
         self.Callsign, elapsedMins))
       BASE:I(string.format("%s: Engine start in progress - %.0f seconds, velocity: %.1f kts", 
         self.Callsign, elapsedTime, velocity))
-      lastStatusTime = currentTime
     end
     
     -- === FSM STATE TRANSITIONS BASED ON PHYSICAL STATE ===
@@ -2985,6 +3245,15 @@ function BOMBER:_MonitorEngineStart()
       end
     end
     
+    -- Start escort monitoring once we're above 2000ft (if required and not already started)
+    -- More lenient thresholds during CLIMBING allow formation assembly
+    if self.Profile.EscortRequired and altitude >= 610 then  -- 2000ft in meters
+      if self.EscortMonitor and not self.EscortMonitor.SchedulerID then
+        BASE:I(string.format("%s: Above 2000ft - starting escort monitoring", self.Callsign))
+        self.EscortMonitor:Start()
+      end
+    end
+    
     -- CLIMBING → CRUISE (reached cruise altitude)
     if self:Is(BOMBER.States.CLIMBING) then
       if altitude >= (cruiseAltMeters * 0.9) then  -- Within 10% of cruise altitude
@@ -3006,8 +3275,40 @@ function BOMBER:_MonitorEngineStart()
             self:__Blocked(0.5)
             stuckWarningIssued = true
           end
+        end
+      end
+    end
+    
+    -- === BLOCKAGE CLEARANCE DETECTION (works when in BLOCKED state) ===
+    if self:Is(BOMBER.States.BLOCKED) then
+      if movementDetectedTime and lastMovementTime then
+        local stuckDuration = currentTime - lastMovementTime
+        
+        -- Check if blockage cleared (movement resumed)
+        if velocity > 1 then
+          BASE:I(string.format("%s: Blockage cleared - resuming (velocity: %.1f kts)", self.Callsign, velocity))
+          self:_BroadcastMessage(string.format("%s: ✓ Taxiway cleared - resuming departure", 
+            self.Callsign))
           
-          -- If stuck for 3 minutes total, scrub mission
+          -- Reset transition flags so we can progress through states again
+          -- Based on where we were before blockage
+          if self.PreBlockedState == BOMBER.States.TAKING_OFF then
+            -- We were taking off - allow TAKING_OFF → CLIMBING transition
+            hasTransitionedToTakeoff = true
+            hasTransitionedToClimbing = false
+          else
+            -- We were taxiing - allow TAXIING → TAKING_OFF transition
+            hasTransitionedToTakeoff = false
+          end
+          
+          -- Clear blockage - will transition back to TAXIING via FSM rule
+          self:__ClearBlockage(0.5)
+          stuckWarningIssued = false
+          
+          -- Reset stuck tracking since we're moving again
+          lastMovementTime = currentTime
+        else
+          -- Still blocked - check if we should scrub mission after 3 minutes total
           if stuckDuration >= 180 then
             BASE:E(string.format("%s: CRITICAL - Bomber stuck for 3 minutes - scrubbing mission", 
               self.Callsign))
@@ -3023,29 +3324,16 @@ function BOMBER:_MonitorEngineStart()
             self:_ScrubMission("Blocked on taxiway")
             return
           end
-        else
-          -- Movement resumed - transition from BLOCKED back to appropriate state
-          if self:Is(BOMBER.States.BLOCKED) and velocity > 1 then
-            BASE:I(string.format("%s: Blockage cleared - resuming (velocity: %.1f kts)", self.Callsign, velocity))
-            self:_BroadcastMessage(string.format("%s: ✓ Taxiway cleared - resuming departure", 
-              self.Callsign))
-            
-            -- Determine which state to return to based on velocity
-            if velocity >= 50 then
-              -- Fast enough for takeoff
-              self:__ClearBlockage(0.5)  -- Will transition to TAKING_OFF via the transition rule
-            else
-              -- Still taxiing speed
-              self:__ClearBlockage(0.5)  -- Will transition to TAXIING via the transition rule
-            end
-            stuckWarningIssued = false
-          end
         end
       end
     end
     
     -- Safety timeout: 15 minutes (900 seconds) for complete startup + taxi + takeoff
-    if elapsedTime > 900 and not self:Is(BOMBER.States.CLIMBING) and not self:Is(BOMBER.States.CRUISE) then
+    -- Don't apply timeout if already in flight phases (CLIMBING, CRUISE, PRE_ATTACK, ATTACKING, EGRESSING, ABORTING, RTB)
+    if elapsedTime > 900 and not self:Is(BOMBER.States.CLIMBING) and not self:Is(BOMBER.States.CRUISE) 
+       and not self:Is(BOMBER.States.PRE_ATTACK) and not self:Is(BOMBER.States.ATTACKING) 
+       and not self:Is(BOMBER.States.EGRESSING) and not self:Is(BOMBER.States.ABORTING) 
+       and not self:Is(BOMBER.States.RTB) then
       BASE:E(string.format("%s: ERROR - Startup/departure timeout after 15 minutes", self.Callsign))
       self:_BroadcastMessage(string.format("%s: ❌ Aircraft departure failure after 15 minutes - mission scrubbed", 
         self.Callsign))
@@ -3060,6 +3348,633 @@ function BOMBER:_MonitorEngineStart()
     end
     
   end, {}, 2, 5)  -- Check every 5 seconds
+end
+
+--- Monitor landing progress after RTB
+-- @param #BOMBER self
+function BOMBER:_MonitorLanding()
+  local landingDetectedTime = nil
+  local lastVelocity = nil
+  local lastAltitude = nil
+  
+  BASE:I(string.format("%s: Starting landing monitor", self.Callsign))
+  self:_LogLandingSnapshot("Landing monitor start", { force = true, includeController = false })
+  
+  self.LandingMonitor = SCHEDULER:New(nil, function()
+    if not self.Group or not self:IsAlive() then
+      BASE:I(string.format("%s: Landing monitor stopping (not alive)", self.Callsign))
+      self:_CancelLandingFailureDespawn("group not alive")
+      if self.LandingMonitor then
+        self.LandingMonitor:Stop()
+        self.LandingMonitor = nil
+      end
+      return
+    end
+    
+    -- Only monitor in RTB state
+    if not self:Is(BOMBER.States.RTB) then
+      BASE:I(string.format("%s: Landing monitor stopping (not in RTB state)", self.Callsign))
+      self:_CancelLandingFailureDespawn("state change")
+      if self.LandingMonitor then
+        self.LandingMonitor:Stop()
+        self.LandingMonitor = nil
+      end
+      return
+    end
+    
+    local currentTime = timer.getTime()
+    local velocity = self.Group:GetVelocityKNOTS()
+    local altitude = self.Group:GetAltitude()
+    
+    -- Check landing conditions: altitude < 50ft (15m) and velocity < 5 kts
+    local isOnGround = altitude < 15 and velocity < 5
+    
+    if isOnGround then
+      if not landingDetectedTime then
+        -- First detection of landing conditions
+        landingDetectedTime = currentTime
+        lastVelocity = velocity
+        lastAltitude = altitude
+        BASE:I(string.format("%s: Landing conditions detected (alt: %.1fm, vel: %.1fkts) - waiting for sustained condition", 
+          self.Callsign, altitude, velocity))
+        self:_LogLandingSnapshot("Landing detect", { force = true, includeController = false })
+      else
+        -- Check if conditions have been sustained for 10 seconds
+        local sustainedTime = currentTime - landingDetectedTime
+        
+        if sustainedTime >= 10 then
+          -- Landed successfully!
+          BASE:I(string.format("%s: Sustained landing confirmed (%.1f seconds)", 
+            self.Callsign, sustainedTime))
+          self:_CancelLandingFailureDespawn("landing detected")
+          self:_LogLandingSnapshot("Landing confirmed", { force = true, includeController = false })
+          
+          if self.LandingMonitor then
+            self.LandingMonitor:Stop()
+            self.LandingMonitor = nil
+          end
+          
+          -- Transition to LANDED state
+          self:__Landed(0.5)
+          return
+        else
+          -- Still waiting for sustained condition
+          BASE:I(string.format("%s: Landing sustained for %.1f seconds (alt: %.1fm, vel: %.1fkts)", 
+            self.Callsign, sustainedTime, altitude, velocity))
+        end
+      end
+    else
+      -- Not on ground - reset detection
+      if landingDetectedTime then
+        BASE:I(string.format("%s: Landing conditions lost (alt: %.1fm, vel: %.1fkts) - resetting detection", 
+          self.Callsign, altitude, velocity))
+        self:_LogLandingSnapshot("Landing detect reset", { includeController = false })
+        landingDetectedTime = nil
+      end
+    end
+    
+  end, {}, 2, 5)  -- Check every 5 seconds
+end
+
+--- Apply explicit speed commands for RTB legs
+-- @param #BOMBER self
+-- @param #number index
+function BOMBER:_ApplyRTBWaypointSpeed(index)
+  if not self.Group then
+    BASE:E(string.format("%s: Cannot apply RTB speed - group handle missing", self.Callsign))
+    return
+  end
+
+  if not self.RTBRoute or #self.RTBRoute == 0 then
+    BASE:E(string.format("%s: Cannot apply RTB speed - RTB route not defined", self.Callsign))
+    return
+  end
+
+  index = index or 1
+  if index < 1 or index > #self.RTBRoute then
+    BASE:I(string.format("%s: RTB speed request for invalid waypoint index %d (route has %d)", self.Callsign, index, #self.RTBRoute))
+    return
+  end
+
+  local waypoint = self.RTBRoute[index]
+  if not waypoint then return end
+
+  local targetSpeedMPS = waypoint.speed
+  if not targetSpeedMPS or targetSpeedMPS <= 0 then
+    local fallbackKnots = self.CruiseSpeed or (self.Profile and self.Profile.CruiseSpeed)
+    if fallbackKnots then
+      targetSpeedMPS = fallbackKnots * 0.514444
+    end
+  end
+
+  if not targetSpeedMPS or targetSpeedMPS <= 0 then
+    BASE:E(string.format("%s: Unable to determine RTB speed for waypoint %d", self.Callsign, index))
+    return
+  end
+
+  if self.CurrentRTBSpeedIndex == index and self.CurrentRTBSpeedMPS and math.abs(self.CurrentRTBSpeedMPS - targetSpeedMPS) < 0.5 then
+    return
+  end
+
+  local ok, err = pcall(function()
+    self.Group:SetSpeed(targetSpeedMPS)
+  end)
+
+  if ok then
+    self.CurrentRTBSpeedMPS = targetSpeedMPS
+    self.CurrentRTBSpeedIndex = index
+    BASE:I(string.format("%s: Applied RTB speed %.0f kts for waypoint %d/%d", self.Callsign, targetSpeedMPS / 0.514444, index, #self.RTBRoute))
+  else
+    BASE:E(string.format("%s: Failed to set RTB speed for waypoint %d - %s", self.Callsign, index, tostring(err)))
+  end
+end
+
+--- Build a mission-editor style landing waypoint for the RTB route.
+-- Ensures the last leg is a true DCS "Land" waypoint with an airdrome id so the AI flies a native recovery instead of relying on speed overrides.
+-- @param #BOMBER self
+-- @param #AIRBASE airbase
+-- @param #COORDINATE landingCoord
+-- @param #number landingSpeedMPS
+-- @param #table landingTasks
+-- @param #number fieldAltitude
+function BOMBER:_BuildLandingWaypoint(airbase, landingCoord, landingSpeedMPS, landingTasks, fieldAltitude)
+  local coord = landingCoord or (airbase and airbase:GetCoordinate())
+  if not coord then
+    BASE:E(string.format("%s: Unable to build landing waypoint - coordinate missing", self.Callsign))
+    return nil
+  end
+
+  local wp = coord:WaypointAirLanding(landingSpeedMPS, airbase, landingTasks)
+  wp.type = "Land"
+  wp.action = "Landing"
+  wp.alt_type = "BARO"
+  wp.alt = fieldAltitude and (fieldAltitude + 15) or wp.alt or 0
+  wp.airdromeId = (airbase and airbase:GetID()) or wp.airdromeId
+  wp.properties = wp.properties or {}
+  wp.properties.LANDING_POINT = true
+  wp.properties.LANDING = true
+
+  local airbaseName = airbase and airbase:GetName() or "unknown airbase"
+  BASE:I(string.format("%s: Created explicit landing waypoint for %s (airdromeId %s)", self.Callsign, airbaseName, tostring(wp.airdromeId)))
+
+  return wp
+end
+
+--- Safely resolve the active DCS controller for the bomber group.
+-- @param #BOMBER self
+-- @return DCS Controller or nil, error message when nil
+function BOMBER:_GetActiveController()
+  local group = self.Group
+  if not group then
+    return nil, "group reference missing"
+  end
+
+  if group.GetController then
+    local ok, controllerOrErr = pcall(function()
+      return group:GetController()
+    end)
+
+    if ok and controllerOrErr then
+      return controllerOrErr
+    elseif not ok then
+      return nil, string.format("GetController threw '%s'", tostring(controllerOrErr))
+    end
+  end
+
+  if not group.GetDCSObject then
+    return nil, "GetDCSObject unavailable"
+  end
+
+  local dcsGroup = group:GetDCSObject()
+  if not dcsGroup then
+    return nil, "DCS group unavailable"
+  end
+
+  if not dcsGroup.getController then
+    return nil, "DCS getController missing"
+  end
+
+  local okDCS, controllerOrErr = pcall(function()
+    return dcsGroup:getController()
+  end)
+
+  if okDCS and controllerOrErr then
+    return controllerOrErr
+  elseif okDCS then
+    return nil, "controller unavailable"
+  end
+
+  return nil, string.format("getController threw '%s'", tostring(controllerOrErr))
+end
+
+--- Call either Moose or native DCS controller methods safely.
+-- @param controller Controller instance
+-- @param primary string Method name to try first
+-- @param secondary string Optional fallback method name
+-- @param ... any Extra parameters forwarded to the method
+-- @return boolean, any True when call succeeded and method return value (or nil and error string)
+local function callController(controller, primary, secondary, ...)
+  if not controller then
+    return false, nil, "controller missing"
+  end
+
+  local function invoke(methodName, ...)
+    local fn = methodName and controller[methodName]
+    if type(fn) ~= "function" then
+      return false, nil, string.format("method %s unavailable", tostring(methodName))
+    end
+
+    local ok, result = pcall(fn, controller, ...)
+    if ok then
+      return true, result
+    end
+    return false, nil, string.format("%s threw '%s'", methodName, tostring(result))
+  end
+
+  local ok, result, err = invoke(primary, ...)
+  if ok then
+    return true, result
+  end
+
+  if secondary then
+    local okAlt, resultAlt, errAlt = invoke(secondary, ...)
+    if okAlt then
+      return true, resultAlt
+    end
+    return false, nil, errAlt
+  end
+
+  return false, nil, err
+end
+
+--- Read the current mission task from whichever controller implementation we have.
+-- @param #BOMBER self
+-- @param controller Controller instance
+-- @return table, string Mission task or error text
+function BOMBER:_GetControllerMissionTask(controller)
+  local ok, task, err = callController(controller, "GetTask", "getTask")
+  if ok then
+    return task
+  end
+  return nil, err or "controller task unavailable"
+end
+
+--- Push a task regardless of controller implementation casing.
+-- @param #BOMBER self
+-- @param controller Controller instance
+-- @param task table DCS task to push
+-- @return boolean, string Success flag and optional error message
+function BOMBER:_PushControllerTask(controller, task)
+  if not task then
+    return false, "task missing"
+  end
+
+  local ok, _, err = callController(controller, "PushTask", "pushTask", task)
+  if ok then
+    return true
+  end
+  return false, err or "controller pushTask unavailable"
+end
+
+--- Force a direct landing task if the AI gets stuck orbiting the landing waypoint.
+-- @param #BOMBER self
+-- @param #string reason Optional logging context
+function BOMBER:_ForceLandingTask(reason)
+  if self.RTBLandingFallbackIssued then
+    return
+  end
+
+  local group = self.Group
+  if not group or not group:IsAlive() then
+    BASE:E(string.format("%s: Cannot force landing task - group not alive", self.Callsign))
+    return
+  end
+
+  local controller, controllerErr = self:_GetActiveController()
+  if not controller then
+    BASE:E(string.format("%s: Cannot force landing task - %s", self.Callsign, controllerErr or "controller unavailable"))
+    return
+  end
+
+  local landingTask = self.RTBLandingTask
+  if not landingTask then
+    local airbase = self.RTBAirbase
+    if not airbase or not airbase:GetCoordinate() then
+      BASE:E(string.format("%s: Cannot build fallback landing task - airbase reference missing", self.Callsign))
+      return
+    end
+    landingTask = group:TaskLandAtVec2(airbase:GetCoordinate():GetVec2())
+    self.RTBLandingTask = landingTask
+  end
+
+  self:_LogLandingSnapshot("ForceLandingTask (pre)", { force = true })
+
+  local ok, err = pcall(function()
+    local pushed, pushErr = self:_PushControllerTask(controller, landingTask)
+    if not pushed then
+      error(pushErr or "controller rejected push task")
+    end
+  end)
+
+  if ok then
+    self.RTBLandingFallbackIssued = true
+    BASE:I(string.format("%s: Forced immediate landing task (%s)", self.Callsign, reason or "fallback trigger"))
+    self:_LogLandingSnapshot("ForceLandingTask (success)", { force = true })
+  else
+    BASE:E(string.format("%s: Failed to push landing fallback task - %s", self.Callsign, tostring(err)))
+    self:_LogLandingSnapshot("ForceLandingTask (error)", { force = true })
+  end
+end
+
+--- Track progress on the final landing waypoint and trigger fallbacks if needed.
+-- @param #BOMBER self
+-- @param #number distanceMeters Current distance to the active landing waypoint
+function BOMBER:_TrackLandingProgress(distanceMeters)
+  if not self.RTBRoute or #self.RTBRoute == 0 then
+    self.RTBLandingStuckSeconds = 0
+    return
+  end
+
+  local finalIndex = #self.RTBRoute
+  local currentIndex = self.RTBWaypointIndex or 1
+  if currentIndex ~= finalIndex then
+    self.RTBLandingStuckSeconds = 0
+    return
+  end
+
+  local stuckDistance = BOMBER_ESCORT_CONFIG.RTBLandingStuckDistance or 8000
+  if distanceMeters < stuckDistance then
+    self.RTBLandingStuckSeconds = 0
+    return
+  end
+
+  local interval = self.RTBMonitorInterval or 5
+  self.RTBLandingStuckSeconds = (self.RTBLandingStuckSeconds or 0) + interval
+
+  local requiredTime = BOMBER_ESCORT_CONFIG.RTBLandingStuckTime or 90
+  if self.RTBLandingStuckSeconds >= requiredTime and not self.RTBLandingFallbackIssued then
+    local reason = string.format("stuck %.1f km from runway for %.0fs", distanceMeters / 1000, self.RTBLandingStuckSeconds)
+    BASE:E(string.format("%s: Landing fallback triggered - %s", self.Callsign, reason))
+    self:_LogLandingSnapshot("Landing fallback trigger", { force = true })
+    self:_ForceLandingTask(reason)
+    self:_ScheduleLandingFailureDespawn("landing fallback")
+    self.RTBLandingStuckLogged = self.RTBLandingStuckSeconds
+    return
+  end
+
+  local snapshotInterval = BOMBER_ESCORT_CONFIG.RTBLandingSnapshotInterval or 0
+  if snapshotInterval > 0 then
+    local lastLogged = self.RTBLandingStuckLogged or 0
+    if self.RTBLandingStuckSeconds - lastLogged >= snapshotInterval then
+      self.RTBLandingStuckLogged = self.RTBLandingStuckSeconds
+      self:_LogLandingSnapshot("Landing stuck", { force = true })
+    end
+  end
+end
+
+--- Compute distance from current aircraft position to a given RTB waypoint index.
+-- @param #BOMBER self
+-- @param #number index
+-- @return #number|nil Distance in meters or nil when unavailable
+function BOMBER:_GetDistanceToRTBWaypoint(index)
+  if not index or index < 1 then return nil end
+  if not self.RTBRoute or #self.RTBRoute == 0 then return nil end
+  if index > #self.RTBRoute then index = #self.RTBRoute end
+  if not self.Group or not self.Group:IsAlive() then return nil end
+  local coord = self.Group:GetCoordinate()
+  if not coord then return nil end
+  local wp = self.RTBRoute[index]
+  if not wp or not wp.x or not wp.y then return nil end
+  local wpCoord = COORDINATE:New(wp.x, wp.alt or 0, wp.y)
+  return coord:Get2DDistance(wpCoord)
+end
+
+--- Emit a detailed landing/RTB snapshot for troubleshooting.
+-- @param #BOMBER self
+-- @param #string context Label for the snapshot
+-- @param #table options { force = bool, includeController = bool }
+function BOMBER:_LogLandingSnapshot(context, options)
+  options = options or {}
+  local throttle = BOMBER_ESCORT_CONFIG.RTBLandingSnapshotInterval or 0
+  local now = timer.getTime()
+  if not options.force and throttle > 0 then
+    if self._LastLandingSnapshotTime and (now - self._LastLandingSnapshotTime) < throttle then
+      return
+    end
+    self._LastLandingSnapshotTime = now
+  else
+    self._LastLandingSnapshotTime = now
+  end
+
+  local routeCount = self.RTBRoute and #self.RTBRoute or 0
+  local currentIndex = self.RTBWaypointIndex or 1
+  local infoParts = {}
+  table.insert(infoParts, string.format("state=%s", self:GetState() or "n/a"))
+  table.insert(infoParts, string.format("wp=%d/%d", currentIndex, routeCount))
+  table.insert(infoParts, string.format("stuck=%.0fs", self.RTBLandingStuckSeconds or 0))
+  table.insert(infoParts, string.format("fallback=%s", self.RTBLandingFallbackIssued and "yes" or "no"))
+  if self.LandingFailureDespawnTimer then
+    table.insert(infoParts, "despawn=scheduled")
+  end
+
+  local activeDist = self:_GetDistanceToRTBWaypoint(currentIndex)
+  if activeDist then
+    table.insert(infoParts, string.format("wp-dist=%.1fkm", activeDist / 1000))
+  end
+  if routeCount > 0 then
+    local finalDist = self:_GetDistanceToRTBWaypoint(routeCount)
+    if finalDist then
+      table.insert(infoParts, string.format("final-dist=%.1fkm", finalDist / 1000))
+    end
+  end
+
+  if self.Group and self.Group:IsAlive() then
+    local speed = self.Group:GetVelocityKNOTS() or 0
+    local altitude = self.Group:GetAltitude() or 0
+    table.insert(infoParts, string.format("spd=%.0fkts", speed))
+    table.insert(infoParts, string.format("alt=%.0fft", UTILS and UTILS.MetersToFeet and UTILS.MetersToFeet(altitude) or altitude * 3.28084))
+  end
+
+  if self.RTBAirbase then
+    table.insert(infoParts, string.format("rtb=%s", self.RTBAirbase:GetName()))
+  end
+
+  BASE:I(string.format("%s: LANDING SNAPSHOT [%s] %s", self.Callsign, context, table.concat(infoParts, " | ")))
+
+  if options.includeController == false then
+    return
+  end
+
+  local controller, controllerErr = self:_GetActiveController()
+  if not controller then
+    BASE:E(string.format("%s: LANDING SNAPSHOT [%s] controller unavailable (%s)", self.Callsign, context, controllerErr or "unknown"))
+    return
+  end
+
+  local missionTask, taskErr = self:_GetControllerMissionTask(controller)
+  if not missionTask then
+    BASE:E(string.format("%s: LANDING SNAPSHOT [%s] controller task unreadable (%s)", self.Callsign, context, taskErr or "unknown"))
+    return
+  end
+
+  local routePoints = missionTask.params and missionTask.params.route and missionTask.params.route.points
+  local routePointCount = routePoints and #routePoints or 0
+  BASE:I(string.format("%s: LANDING SNAPSHOT [%s] controller task %s with %d point(s)", self.Callsign, context, tostring(missionTask.id), routePointCount))
+
+  if routePoints and routePointCount > 0 then
+    local lastPoint = routePoints[routePointCount]
+    if lastPoint and lastPoint.x and lastPoint.y then
+      local coordDesc = COORDINATE:New(lastPoint.x, lastPoint.alt or 0, lastPoint.y):ToStringLLDMS()
+      local altFeet = lastPoint.alt and ((UTILS and UTILS.MetersToFeet and UTILS.MetersToFeet(lastPoint.alt)) or (lastPoint.alt * 3.28084)) or 0
+      local speedKnots = lastPoint.speed and (lastPoint.speed / 0.514444) or 0
+      BASE:I(string.format("%s: LANDING SNAPSHOT [%s] final controller WP -> %s | alt %.0fft | spd %.0fkts | action %s", self.Callsign, context, coordDesc, altFeet, speedKnots, lastPoint.action or lastPoint.type or "UNKNOWN"))
+    end
+  end
+end
+
+--- Schedule a fail-safe despawn if landing never completes.
+-- @param #BOMBER self
+-- @param #string reason Context for scheduling
+function BOMBER:_ScheduleLandingFailureDespawn(reason)
+  local delay = BOMBER_ESCORT_CONFIG.RTBLandingDespawnDelaySeconds
+  if not delay or delay <= 0 then
+    return
+  end
+  if self.LandingFailureDespawnTimer then
+    return
+  end
+
+  BASE:E(string.format("%s: Landing failure despawn scheduled in %ds (%s)", self.Callsign, delay, reason or "no reason"))
+  self.LandingFailureDespawnTimer = SCHEDULER:New(nil, function()
+    self.LandingFailureDespawnTimer = nil
+    if not self:IsAlive() then
+      return
+    end
+    if self:Is(BOMBER.States.LANDED) then
+      BASE:I(string.format("%s: Landing failure despawn canceled (already landed)", self.Callsign))
+      return
+    end
+    self:_LogLandingSnapshot("Landing failure despawn", { force = true })
+    self:_BroadcastMessage(string.format("%s: Could not complete landing in time - despawning to prevent mission stall.", self.Callsign))
+    self:_ScrubMission("Landing failure despawn")
+  end, {}, delay)
+end
+
+--- Cancel any pending landing failure despawn timers.
+-- @param #BOMBER self
+-- @param #string reason Optional log context
+function BOMBER:_CancelLandingFailureDespawn(reason)
+  if self.LandingFailureDespawnTimer then
+    self.LandingFailureDespawnTimer:Stop()
+    self.LandingFailureDespawnTimer = nil
+    BASE:I(string.format("%s: Landing failure despawn canceled (%s)", self.Callsign, reason or "cleared"))
+  end
+end
+
+--- Monitor RTB waypoint progress for debugging
+-- @param #BOMBER self
+function BOMBER:_StartRTBMonitor()
+  if self.RTBMonitor then
+    BASE:I(string.format("%s: Restarting RTB monitor", self.Callsign))
+    self.RTBMonitor:Stop()
+    self.RTBMonitor = nil
+  end
+
+  self.RTBWaypointIndex = 1
+  self.CurrentRTBSpeedIndex = nil
+  self.CurrentRTBSpeedMPS = nil
+  local monitorInterval = 5
+  self.RTBMonitorInterval = monitorInterval
+  self.RTBLandingStuckSeconds = 0
+
+  if self.RTBRoute and #self.RTBRoute > 0 then
+    self:_ApplyRTBWaypointSpeed(self.RTBWaypointIndex)
+  end
+
+  local function feet(valueMeters)
+    if not valueMeters then return 0 end
+    if UTILS and UTILS.MetersToFeet then
+      return UTILS.MetersToFeet(valueMeters)
+    end
+    return valueMeters * 3.28084
+  end
+
+  BASE:I(string.format("%s: RTB progress monitor started", self.Callsign))
+
+  self.RTBMonitor = SCHEDULER:New(nil, function()
+    if not self.Group or not self:IsAlive() then
+      BASE:I(string.format("%s: RTB monitor stopping (group not alive)", self.Callsign))
+      if self.RTBMonitor then
+        self.RTBMonitor:Stop()
+        self.RTBMonitor = nil
+      end
+      return
+    end
+
+    if not self.RTBRoute or #self.RTBRoute == 0 then
+      BASE:I(string.format("%s: RTB monitor stopping (no RTB route)", self.Callsign))
+      if self.RTBMonitor then
+        self.RTBMonitor:Stop()
+        self.RTBMonitor = nil
+      end
+      return
+    end
+
+    if not (self:Is(BOMBER.States.ABORTING) or self:Is(BOMBER.States.RTB)) then
+      BASE:I(string.format("%s: RTB monitor stopping (state %s)", self.Callsign, self:GetState()))
+      if self.RTBMonitor then
+        self.RTBMonitor:Stop()
+        self.RTBMonitor = nil
+      end
+      return
+    end
+
+    local coord = self.Group:GetCoordinate()
+    if not coord then
+      BASE:E(string.format("%s: RTB monitor cannot read aircraft position", self.Callsign))
+      return
+    end
+
+    local currentSpeed = self.Group:GetVelocityKNOTS() or 0
+    local currentAltMeters = self.Group:GetAltitude() or 0
+    BASE:I(string.format("%s: RTB monitor tick - state %s | speed %.0f kts | alt %.0fft", self.Callsign, self:GetState(), currentSpeed, feet(currentAltMeters)))
+
+    local index = self.RTBWaypointIndex or 1
+    if index > #self.RTBRoute then
+      BASE:I(string.format("%s: RTB monitor reached end of route (%d points)", self.Callsign, #self.RTBRoute))
+      if self.RTBMonitor then
+        self.RTBMonitor:Stop()
+        self.RTBMonitor = nil
+      end
+      return
+    end
+
+    local nextWP = self.RTBRoute[index]
+    if nextWP and nextWP.x and nextWP.y then
+      local wpCoord = COORDINATE:New(nextWP.x, nextWP.alt or 0, nextWP.y)
+      local distanceMeters = coord:Get2DDistance(wpCoord)
+      self:_TrackLandingProgress(distanceMeters)
+      BASE:I(string.format("%s: RTB monitor - WP %d/%d distance %.1f km (target alt %.0fft, target spd %.0f kts)",
+        self.Callsign,
+        index,
+        #self.RTBRoute,
+        distanceMeters / 1000,
+        feet(nextWP.alt or 0),
+        (nextWP.speed or 0) / 0.514444))
+
+      if distanceMeters < 4000 then
+        self.RTBWaypointIndex = index + 1
+        BASE:I(string.format("%s: RTB monitor advancing to waypoint %d", self.Callsign, self.RTBWaypointIndex))
+        if self.RTBWaypointIndex <= #self.RTBRoute then
+          self:_ApplyRTBWaypointSpeed(self.RTBWaypointIndex)
+        end
+      end
+    else
+      BASE:E(string.format("%s: RTB waypoint %d missing coordinate data", self.Callsign, index))
+      self.RTBWaypointIndex = index + 1
+    end
+
+  end, {}, 1, monitorInterval)
 end
 
 --- Monitor waypoint progress
@@ -3652,6 +4567,19 @@ function BOMBER:_PruneEscortRoster()
   end
 end
 
+--- Prevent further mission resumes after abort is committed
+-- @param #BOMBER self
+-- @param #string reason Optional context for logging/broadcasts
+function BOMBER:_DisableEscortResume(reason)
+  if not self.AllowEscortResume then
+    return
+  end
+
+  self.AllowEscortResume = false
+  self.ResumeLockReason = reason or "mission abort locked"
+  BASE:I(string.format("%s: Escort resume disabled (%s)", self.Callsign, self.ResumeLockReason))
+end
+
 --- Escort arrived event
 -- @param #BOMBER self
 -- @param #number escortCount Number of escorts
@@ -3677,6 +4605,12 @@ function BOMBER:OnEscortArrived(escortCount)
   local message = string.format("%s: ✓ Escort contact established. %d fighter%s on station. Proceeding with mission.", 
     self.Callsign, escortCount, escortCount > 1 and "s" or "")
   self:_BroadcastMessage(message)
+
+  if not self.AllowEscortResume then
+    BASE:I(string.format("%s: Escort arrival detected but resume is locked (%s)", self.Callsign, self.ResumeLockReason or "no reason provided"))
+    self:_BroadcastMessage(string.format("%s: Escort contact acknowledged but mission abort is locked. Continuing RTB.", self.Callsign))
+    return
+  end
   
   -- If was aborting/RTB and escort returns, can resume mission if conditions allow
   if self:Is(BOMBER.States.ABORTING) or self:Is(BOMBER.States.RTB) then
@@ -3839,13 +4773,13 @@ function BOMBER:OnEscortLost(unescortedTime, currentEscortCount, hadSufficientEs
     self.InsufficientEscortWarning = false
   end
   
-  BASE:I(string.format("%s: Lost escort - unescorted for %.0f seconds (had sufficient: %s)", 
-    self.Callsign, unescortedTime, tostring(hadSufficientEscorts)))
-  
   -- Don't send warnings/abort if already aborting or RTB (but keep monitor running for rejoin detection)
   if self:Is(BOMBER.States.ABORTING) or self:Is(BOMBER.States.RTB) then
     return
   end
+  
+  BASE:I(string.format("%s: Lost escort - unescorted for %.0f seconds (had sufficient: %s)", 
+    self.Callsign, unescortedTime, tostring(hadSufficientEscorts)))
   
   -- Calculate distance to target to determine urgency
   local distanceToTarget = 0
@@ -4364,8 +5298,11 @@ end
 
 --- FSM State: Blocked
 -- @param #BOMBER self
-function BOMBER:onenterBlocked()
-  BASE:I(string.format("%s: STATE CHANGE - BLOCKED (obstructed on taxiway)", self.Callsign))
+function BOMBER:onenterBlocked(From)
+  -- Store which state we came from for reference
+  self.PreBlockedState = From or "Unknown"
+  
+  BASE:I(string.format("%s: STATE CHANGE - BLOCKED (obstructed on taxiway, was in %s)", self.Callsign, self.PreBlockedState))
   self:_BroadcastMessage(string.format("%s: ⚠️ Aircraft blocked on taxiway - waiting for clearance...", self.Callsign))
   
   -- Track when we entered BLOCKED state for periodic updates
@@ -4430,11 +5367,6 @@ function BOMBER:onenterCruise()
   local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
   BASE:I(string.format("%s: STATE CHANGE - CRUISE (at %d ft, en route to target)", self.Callsign, cruiseAlt))
   self:_BroadcastMessage(string.format("%s: At cruise altitude, en route to target", self.Callsign))
-  
-  -- Start escort monitoring when at cruise (if required)
-  if self.Profile.EscortRequired and not self.EscortMonitor then
-    self:_StartEscortMonitoring()
-  end
 end
 
 --- FSM State: Pre-Attack
@@ -4583,66 +5515,307 @@ end
 function BOMBER:onenterAborting()
   BASE:I(string.format("%s: STATE CHANGE - ABORTING (mission abort in progress)", self.Callsign))
   self:_BroadcastMessage(string.format("%s: ❌ ABORTING MISSION! Returning to base immediately!", self.Callsign))
+  self:_DisableEscortResume("mission abort in progress")
   
-  -- Keep escort monitor running to detect if escorts rejoin for mission resumption
-  -- Stop waypoint monitoring temporarily while we set new route
+  -- Escort monitor stays active for situational awareness only (no mission resume)
+  -- Stop waypoint monitoring - no longer tracking the bombing route
   if self.WaypointMonitor then
     self.WaypointMonitor:Stop()
+    self.WaypointMonitor = nil
   end
+  
+  -- Clear mission route tracking since we're aborting
+  self.Route = nil
+  self.BombingWaypointIndex = nil
+  self.CurrentWaypointIndex = 0
   
   -- Cancel current route and head home
+  BASE:I(string.format("%s: Issuing RTB command", self.Callsign))
+  
+  -- Route back to original spawn airbase (or nearest if spawn airbase unknown)
+  local rtbAirbase = nil
   if self.StartAirbase then
-    local airbase = AIRBASE:FindByName(self.StartAirbase)
-    if airbase then
-      BASE:I(string.format("%s: Routing to RTB airbase: %s", self.Callsign, self.StartAirbase))
-      
-      -- Get current position and airbase position
-      local currentPos = self.Group:GetCoordinate()
-      local airbaseCoord = airbase:GetCoordinate()
-      
-      -- Create direct route to airbase
-      local rtbWaypoints = {}
-      
-      -- Current position as first waypoint
-      table.insert(rtbWaypoints, currentPos:WaypointAirTurningPoint(
-        nil,
-        self.Profile.CruiseSpeed * 1.2,  -- Faster speed for RTB
-        {},
-        "RTB Start"
-      ))
-      
-      -- Airbase as final waypoint with landing task
-      table.insert(rtbWaypoints, airbaseCoord:WaypointAirLanding(
-        self.Profile.CruiseSpeed * 0.8,
-        airbase,
-        {},
-        "RTB Landing"
-      ))
-      
-      -- Route the group
-      self.Group:Route(rtbWaypoints, 1)  -- Start immediately with 1 second delay
-      BASE:I(string.format("%s: RTB route set - %.1f km direct to %s", 
-        self.Callsign, currentPos:Get2DDistance(airbaseCoord) / 1000, self.StartAirbase))
-      
-      -- Transition to RTB state after route is set
-      self:__ReturnToBase(2)
+    rtbAirbase = AIRBASE:FindByName(self.StartAirbase)
+    if rtbAirbase then
+      BASE:I(string.format("%s: RTB to spawn airbase: %s (coalition %d)", 
+        self.Callsign, self.StartAirbase, rtbAirbase:GetCoalition()))
     else
-      env.warning(string.format("[BOMBER] %s: RTB airbase '%s' not found!", self.Callsign, self.StartAirbase))
-      -- Try generic RTB command as fallback
-      self.Group:RouteRTB()
-      self:__ReturnToBase(2)
+      BASE:E(string.format("%s: Spawn airbase '%s' not found, finding nearest", self.Callsign, self.StartAirbase))
     end
   else
-    BASE:I(string.format("%s: No RTB airbase defined, using closest friendly", self.Callsign))
-    self.Group:RouteRTB()
-    self:__ReturnToBase(2)
+    BASE:I(string.format("%s: No spawn airbase stored, finding nearest", self.Callsign))
   end
   
-  -- Notify mission of failure
-  if self.MissionData and self.MissionData.Mission then
-    BASE:I(string.format("%s: Notifying mission manager of FAILURE", self.Callsign))
-    self.MissionData.Mission:Complete(false)
+  -- Fallback to nearest airbase if spawn airbase not available
+  if not rtbAirbase then
+    local currentPos = self.Group:GetCoordinate()
+    rtbAirbase = currentPos:GetClosestAirbase(nil, Airbase.Category.AIRDROME)
+    if rtbAirbase then
+      BASE:I(string.format("%s: RTB to nearest airbase: %s (coalition %d, distance %.1f km)", 
+        self.Callsign, rtbAirbase:GetName(), rtbAirbase:GetCoalition(), currentPos:Get2DDistance(rtbAirbase:GetCoordinate()) / 1000))
+    else
+      BASE:E(string.format("%s: ERROR - No airbase found for RTB!", self.Callsign))
+    end
   end
+  
+  if rtbAirbase then
+    BASE:I(string.format("%s: Commanding land at %s", self.Callsign, rtbAirbase:GetName()))
+
+    local group = self.Group
+    if not group or not group:IsAlive() then
+      BASE:E(string.format("%s: ERROR - Bomber group not available for RTB command", self.Callsign))
+    else
+        group:RouteStop()
+        group:ClearTasks()
+        BASE:I(string.format("%s: Cleared active tasks prior to RTB routing", self.Callsign))
+      local rtbCoord = rtbAirbase:GetCoordinate()
+      local currentCoord = group:GetCoordinate()
+      local currentSpeed = group:GetVelocityKNOTS() or 0
+      local fallbackSpeed = self.CruiseSpeed or (self.Profile and self.Profile.CruiseSpeed) or BOMBER_ESCORT_CONFIG.DefaultSpeed or 300
+      local desiredSpeed = currentSpeed > 10 and currentSpeed or fallbackSpeed
+      local approachSpeed = math.max(desiredSpeed * 0.7, 150)
+      local cruiseSpeedMPS = desiredSpeed * 0.514444
+      local landingSpeedMPS = approachSpeed * 0.514444
+      local fieldAltitude = rtbCoord:GetLandHeight() or 0
+
+      BASE:I(string.format("%s: RTB routing speed %.0f kts (landing %.0f kts)", self.Callsign, desiredSpeed, approachSpeed))
+
+      local route = {}
+      local approachLegs = 0
+
+      local function dumpControllerRouteSnapshot(controller)
+        if not controller then
+          BASE:E(string.format("%s: Unable to dump controller mission - controller missing", self.Callsign))
+          return
+        end
+
+        local missionTask, taskErr = self:_GetControllerMissionTask(controller)
+        if not missionTask then
+          BASE:E(string.format("%s: Unable to read controller mission task - %s", self.Callsign, taskErr or "unknown error"))
+          return
+        end
+
+        local routePoints = missionTask.params and missionTask.params.route and missionTask.params.route.points
+        if not routePoints or #routePoints == 0 then
+          BASE:E(string.format("%s: Controller mission has no route points (task id: %s)", self.Callsign, tostring(missionTask.id)))
+          return
+        end
+
+        BASE:I(string.format("%s: Controller mission snapshot - %d point(s), task id %s", self.Callsign, #routePoints, tostring(missionTask.id)))
+        for idx, point in ipairs(routePoints) do
+          local coordDesc = "(missing coordinates)"
+          if point.x and point.y then
+            local wpCoord = COORDINATE:New(point.x, point.alt or 0, point.y)
+            coordDesc = wpCoord:ToStringLLDMS()
+          end
+          local altitudeFeet = point.alt and ((UTILS and UTILS.MetersToFeet and UTILS.MetersToFeet(point.alt)) or (point.alt * 3.28084)) or 0
+          local speedKnots = point.speed and (point.speed / 0.514444) or 0
+          local action = point.action or point.type or "UNKNOWN"
+          BASE:I(string.format("%s: CTRL WP %d -> %s | alt %.0fft | spd %.0fkts | action %s", self.Callsign, idx, coordDesc, altitudeFeet, speedKnots, action))
+        end
+      end
+
+      local function setWaypointSpeed(waypoint, targetSpeedMPS)
+        if not waypoint or not targetSpeedMPS then return end
+        waypoint.speed = targetSpeedMPS
+        waypoint.speed_locked = true
+        waypoint.speedEdited = true
+        if waypoint.task and waypoint.task.params then
+          waypoint.task.params.speed = targetSpeedMPS
+          waypoint.task.params.speed_locked = true
+          waypoint.task.params.speedEdited = true
+        end
+      end
+
+      if currentCoord then
+        local distanceToBase = currentCoord:Get2DDistance(rtbCoord)
+
+        local function normalizeDegrees(value)
+          value = value % 360
+          if value < 0 then value = value + 360 end
+          return value
+        end
+
+        local function diffDegrees(a, b)
+          local diff = math.abs(a - b) % 360
+          if diff > 180 then diff = 360 - diff end
+          return diff
+        end
+
+        local headingToBase = 0
+        if currentCoord and rtbCoord then
+          headingToBase = currentCoord:HeadingTo(rtbCoord)
+        end
+
+        local landingHeading = headingToBase
+        local approachSource = "inbound vector"
+        local runways = rtbAirbase.GetRunways and rtbAirbase:GetRunways() or nil
+        if runways and #runways > 0 then
+          local bestDiff = 361
+          for _, runway in ipairs(runways) do
+            if runway.course then
+              local course = runway.course
+              if math.abs(course) <= (math.pi * 2 + 0.001) then
+                course = math.deg(course)
+              end
+              local primary = normalizeDegrees(course)
+              local secondary = normalizeDegrees(course + 180)
+              for _, candidate in ipairs({primary, secondary}) do
+                local diff = diffDegrees(candidate, headingToBase)
+                if diff < bestDiff then
+                  bestDiff = diff
+                  landingHeading = candidate
+                  approachSource = runway.name and string.format("runway %s", runway.name) or "runway data"
+                end
+              end
+            end
+          end
+        end
+
+        local approachHeading = normalizeDegrees(landingHeading + 180)
+        local currentAltitude = currentCoord.y or fieldAltitude + 1000
+
+        local function metersFromNM(nm)
+          if UTILS and UTILS.NMToMeters then
+            return UTILS.NMToMeters(nm)
+          end
+          return nm * 1852
+        end
+
+        local function buildApproachLeg(offsetMeters, targetAltMeters, speedMPS, label)
+          local legCoord = rtbCoord:Translate(offsetMeters, approachHeading)
+          legCoord:SetAltitude(targetAltMeters, true)
+          local waypoint = legCoord:WaypointAirTurningPoint(nil, speedMPS)
+          setWaypointSpeed(waypoint, speedMPS)
+          table.insert(route, waypoint)
+          approachLegs = approachLegs + 1
+          BASE:I(string.format("%s: Added %s approach fix %.1f km out (alt %.0fft)",
+            self.Callsign,
+            label,
+            offsetMeters / 1000,
+            UTILS.MetersToFeet and UTILS.MetersToFeet(targetAltMeters - fieldAltitude) or (targetAltMeters * 3.28084)))
+        end
+
+        local distanceKm = distanceToBase and (distanceToBase / 1000) or 0
+        BASE:I(string.format("%s: RTB geometry - distance %.1f km, inbound heading %.0f°, landing heading %.0f° via %s", 
+          self.Callsign, distanceKm, headingToBase, landingHeading, approachSource))
+
+        local anchorSpeed = math.max(cruiseSpeedMPS, landingSpeedMPS)
+        local anchorWP = currentCoord:WaypointAirTurningPoint(nil, anchorSpeed)
+        setWaypointSpeed(anchorWP, anchorSpeed)
+        table.insert(route, anchorWP)
+        BASE:I(string.format("%s: Added anchor waypoint at current position", self.Callsign))
+
+        if distanceToBase and distanceToBase > metersFromNM(10) then
+          local farLeg = math.min(math.max(distanceToBase - metersFromNM(6), metersFromNM(20)), metersFromNM(60))
+          farLeg = math.min(farLeg, distanceToBase - metersFromNM(8))
+          if farLeg > metersFromNM(8) then
+            local farAltitude = math.max(fieldAltitude + UTILS.FeetToMeters(12000), math.min(currentAltitude, fieldAltitude + UTILS.FeetToMeters(28000)))
+            buildApproachLeg(farLeg, farAltitude, cruiseSpeedMPS, "initial")
+          end
+        end
+
+        if distanceToBase and distanceToBase > metersFromNM(6) then
+          local nearLeg = math.min(math.max(distanceToBase - metersFromNM(2.5), metersFromNM(8)), metersFromNM(20))
+          nearLeg = math.min(nearLeg, distanceToBase - metersFromNM(2))
+          if nearLeg > metersFromNM(3) then
+            local nearAltitude = fieldAltitude + UTILS.FeetToMeters(3000)
+            buildApproachLeg(nearLeg, nearAltitude, math.min(cruiseSpeedMPS, landingSpeedMPS * 1.3), "final")
+          end
+        end
+
+        if distanceToBase and distanceToBase > metersFromNM(4.5) then
+          local shortLeg = math.min(math.max(distanceToBase - metersFromNM(1.5), metersFromNM(3)), metersFromNM(5))
+          shortLeg = math.min(shortLeg, distanceToBase - metersFromNM(1))
+          if shortLeg > metersFromNM(2.5) then
+            local shortAltitude = fieldAltitude + UTILS.FeetToMeters(1500)
+            local shortSpeed = math.max(landingSpeedMPS * 0.85, landingSpeedMPS - 15, 80 * 0.514444)
+            buildApproachLeg(shortLeg, shortAltitude, shortSpeed, "short-final")
+          end
+        end
+
+        if approachLegs == 0 then
+          BASE:I(string.format("%s: No space for extended approach, proceeding direct from anchor", self.Callsign))
+        end
+      else
+        BASE:E(string.format("%s: WARN - Unable to capture current coordinate for RTB route", self.Callsign))
+      end
+
+      local landingTasks = { group:TaskLandAtVec2(rtbCoord:GetVec2()) }
+      local landingWP = self:_BuildLandingWaypoint(rtbAirbase, rtbCoord, landingSpeedMPS, landingTasks, fieldAltitude)
+      if landingWP then
+        setWaypointSpeed(landingWP, landingSpeedMPS)
+        table.insert(route, landingWP)
+      else
+        BASE:E(string.format("%s: Failed to append landing waypoint to RTB route", self.Callsign))
+      end
+
+      self.RTBRoute = route
+      self.Route = route
+      self.RTBAirbase = rtbAirbase
+      self.RTBLandingTask = landingTasks and landingTasks[1] or nil
+      self.RTBLandingFallbackIssued = false
+      self.RTBLandingStuckSeconds = 0
+
+      if #route > 0 then
+        group:Route(route, 1)
+        BASE:I(string.format("%s: RTB route programmed with %d waypoint(s) (%d approach + landing)", self.Callsign, #route, approachLegs))
+        for idx, wp in ipairs(route) do
+          if wp.x and wp.y then
+            local wpCoord = COORDINATE:New(wp.x, wp.alt or 0, wp.y)
+            local wpAltFeet = UTILS and UTILS.MetersToFeet and UTILS.MetersToFeet(wp.alt or 0) or ((wp.alt or 0) * 3.28084)
+            BASE:I(string.format("%s: RTB WP %d at %s (alt %.0fft, speed %.0f kts)",
+              self.Callsign,
+              idx,
+              wpCoord:ToStringLLDMS(),
+              wpAltFeet,
+              (wp.speed or cruiseSpeedMPS) / 0.514444))
+          end
+        end
+        local snapshotRetryDelay = 2
+        local maxSnapshotAttempts = 3
+
+        local function attemptControllerSnapshot(attempt)
+          if not group then
+            BASE:E(string.format("%s: Cannot dump controller route snapshot - group reference lost", self.Callsign))
+            return
+          end
+
+          local controller, controllerErr = self:_GetActiveController()
+
+          if controller then
+            dumpControllerRouteSnapshot(controller)
+            return
+          end
+
+          local errMsg = controllerErr or "controller unavailable"
+          if attempt >= maxSnapshotAttempts then
+            BASE:E(string.format("%s: Skipping controller route snapshot after %d failed attempt(s) (%s)", self.Callsign, attempt, errMsg))
+            return
+          end
+
+          BASE:E(string.format("%s: Controller snapshot attempt %d failed (%s) - retrying in %d seconds", self.Callsign, attempt, errMsg, snapshotRetryDelay))
+          SCHEDULER:New(nil, function()
+            attemptControllerSnapshot(attempt + 1)
+          end, {}, snapshotRetryDelay)
+        end
+
+        attemptControllerSnapshot(1)
+        self:_StartRTBMonitor()
+      else
+        BASE:E(string.format("%s: ERROR - No RTB route points generated", self.Callsign))
+      end
+    end
+  else
+    BASE:E(string.format("%s: CRITICAL - Cannot RTB without airbase!", self.Callsign))
+  end
+  
+  -- Transition to RTB state
+  BASE:I(string.format("%s: Triggering ReturnToBase state transition in 2 seconds", self.Callsign))
+  self:__ReturnToBase(2)
+  
+  -- Mark mission as failed, but don't complete it yet - wait until landed
+  self.MissionFailed = true
 end
 
 --- FSM State: RTB
@@ -4651,16 +5824,41 @@ function BOMBER:onenterRTB()
   BASE:I(string.format("%s: STATE CHANGE - RTB (returning to base)", self.Callsign))
   self:_BroadcastMessage(string.format("%s: RTB - escort appreciated until landing.", self.Callsign))
   
-  -- Keep escort monitor running to detect if escorts rejoin for mission resumption
+  -- Start landing detection monitor
+  self:_MonitorLanding()
+  
+  -- Keep escort monitor running so escorts can provide cover (resume only if not locked)
 end
 
 --- FSM State: Landed
 -- @param #BOMBER self
 function BOMBER:onenterLanded()
   BASE:I(string.format("%s: STATE CHANGE - LANDED (mission terminated)", self.Callsign))
-  self:_BroadcastMessage(string.format("%s: ✓ Landed safely. Mission complete - thanks for the escort!", self.Callsign))
+  self:_CancelLandingFailureDespawn("landed state")
+  
+  -- Check if mission was aborted or successful
+  local successMessage = ""
+  if self.MissionFailed then
+    successMessage = "❌ Landed safely after mission abort."
+  else
+    successMessage = "✓ Landed safely. Mission complete - thanks for the escort!"
+  end
+  
+  self:_BroadcastMessage(string.format("%s: %s", self.Callsign, successMessage))
   
   -- Stop monitors immediately when landed
+  if self.LandingMonitor then
+    BASE:I(string.format("%s: Stopping landing monitor", self.Callsign))
+    self.LandingMonitor:Stop()
+    self.LandingMonitor = nil
+  end
+
+  if self.RTBMonitor then
+    BASE:I(string.format("%s: Stopping RTB monitor", self.Callsign))
+    self.RTBMonitor:Stop()
+    self.RTBMonitor = nil
+  end
+  
   if self.EscortMonitor then
     BASE:I(string.format("%s: Stopping escort monitor", self.Callsign))
     self.EscortMonitor:Stop()
@@ -4670,6 +5868,13 @@ function BOMBER:onenterLanded()
   if self.WaypointMonitor then
     self.WaypointMonitor:Stop()
     self.WaypointMonitor = nil
+  end
+  
+  -- Now complete the mission after landing
+  if self.MissionData and self.MissionData.Mission then
+    local missionSuccess = not self.MissionFailed
+    BASE:I(string.format("%s: Notifying mission manager - %s", self.Callsign, missionSuccess and "SUCCESS" or "FAILURE"))
+    self.MissionData.Mission:Complete(missionSuccess)
   end
   
   -- Clean up after delay
@@ -4683,6 +5888,7 @@ end
 -- @param #string reason Reason for scrubbing
 function BOMBER:_ScrubMission(reason)
   BASE:E(string.format("%s: Mission scrubbed - %s", self.Callsign, reason))
+  self:_CancelLandingFailureDespawn("scrub mission")
   
   -- Stop all monitors
   if self.HoldingCheck then
@@ -4693,6 +5899,16 @@ function BOMBER:_ScrubMission(reason)
   if self.EngineStartMonitor then
     self.EngineStartMonitor:Stop()
     self.EngineStartMonitor = nil
+  end
+  
+  if self.LandingMonitor then
+    self.LandingMonitor:Stop()
+    self.LandingMonitor = nil
+  end
+
+  if self.RTBMonitor then
+    self.RTBMonitor:Stop()
+    self.RTBMonitor = nil
   end
   
   if self.WaypointMonitor then
@@ -4754,16 +5970,40 @@ end
 -- @param #BOMBER self
 function BOMBER:Destroy()
   -- Stop holding check if active
+  self:_CancelLandingFailureDespawn("destroy")
   if self.HoldingCheck then
     self.HoldingCheck:Stop()
     self.HoldingCheck = nil
   end
   
+  if self.EngineStartMonitor then
+    self.EngineStartMonitor:Stop()
+    self.EngineStartMonitor = nil
+  end
+  
+  if self.LandingMonitor then
+    self.LandingMonitor:Stop()
+    self.LandingMonitor = nil
+  end
+  
+  if self.RTBMonitor then
+    self.RTBMonitor:Stop()
+    self.RTBMonitor = nil
+  end
+
+  if self.WaypointMonitor then
+    self.WaypointMonitor:Stop()
+    self.WaypointMonitor = nil
+  end
+  
   if self.EscortMonitor then
     self.EscortMonitor:Stop()
+    self.EscortMonitor = nil
   end
+  
   if self.ThreatManager then
     self.ThreatManager:Stop()
+    self.ThreatManager = nil
   end
   
   -- Clear escort roster to free memory
