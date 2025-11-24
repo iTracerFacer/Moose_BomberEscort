@@ -2889,15 +2889,18 @@ end
 -- @param #BOMBER self
 function BOMBER:_MonitorEngineStart()
   local startTime = timer.getTime()
-  local lastStatusTime = startTime
   local movementDetectedTime = nil
   local lastMovementTime = nil
   local stuckWarningIssued = false
   
   -- Track which state we've already transitioned to (prevent duplicate transitions)
+  local hasTransitionedToEngineStarting = false
   local hasTransitionedToTaxiing = false
   local hasTransitionedToTakeoff = false
   local hasTransitionedToClimbing = false
+  
+  -- Track last status message time (outside scheduler so it persists across iterations)
+  local lastStatusTime = startTime
   
   self.EngineStartMonitor = SCHEDULER:New(nil, function()
     if not self.Group or not self:IsAlive() then
@@ -2949,9 +2952,10 @@ function BOMBER:_MonitorEngineStart()
     -- === FSM STATE TRANSITIONS BASED ON PHYSICAL STATE ===
     
     -- HOLDING → ENGINE_STARTING (when route commanded and engines starting)
-    if self:Is(BOMBER.States.HOLDING) and self.EngineStartTime then
+    if self:Is(BOMBER.States.HOLDING) and self.EngineStartTime and not hasTransitionedToEngineStarting then
       self:__StartEngines(0.5)
       BASE:I(string.format("%s: Transitioning HOLDING → ENGINE_STARTING", self.Callsign))
+      hasTransitionedToEngineStarting = true
     end
     
     -- ENGINE_STARTING → TAXIING (sustained movement on ground)
@@ -2994,8 +2998,8 @@ function BOMBER:_MonitorEngineStart()
       if movementDetectedTime and lastMovementTime then
         local stuckDuration = currentTime - lastMovementTime
         
-        if velocity < 1 and stuckDuration >= 180 then
-          -- Transition to BLOCKED state after 3 minutes of being stuck
+        if velocity < 1 and stuckDuration >= 60 then
+          -- Transition to BLOCKED state after 1 minute of being stuck
           if not self:Is(BOMBER.States.BLOCKED) then
             BASE:E(string.format("%s: WARNING - Bomber stuck/blocked (stationary for %.0f seconds) → BLOCKED", 
               self.Callsign, stuckDuration))
@@ -3003,11 +3007,11 @@ function BOMBER:_MonitorEngineStart()
             stuckWarningIssued = true
           end
           
-          -- If stuck for 5 minutes total, scrub mission
-          if stuckDuration >= 300 then
-            BASE:E(string.format("%s: CRITICAL - Bomber stuck for 5 minutes - scrubbing mission", 
+          -- If stuck for 3 minutes total, scrub mission
+          if stuckDuration >= 180 then
+            BASE:E(string.format("%s: CRITICAL - Bomber stuck for 3 minutes - scrubbing mission", 
               self.Callsign))
-            self:_BroadcastMessage(string.format("%s: ❌ Aircraft blocked for 5 minutes - mission scrubbed", 
+            self:_BroadcastMessage(string.format("%s: ❌ Aircraft blocked for 3 minutes - mission scrubbed", 
               self.Callsign))
             
             if self.EngineStartMonitor then
@@ -3040,10 +3044,10 @@ function BOMBER:_MonitorEngineStart()
       end
     end
     
-    -- Safety timeout: 10 minutes (600 seconds) for complete startup + taxi + takeoff
-    if elapsedTime > 600 and not self:Is(BOMBER.States.CLIMBING) and not self:Is(BOMBER.States.CRUISE) then
-      BASE:E(string.format("%s: ERROR - Startup/departure timeout after 10 minutes", self.Callsign))
-      self:_BroadcastMessage(string.format("%s: ❌ Aircraft departure failure after 10 minutes - mission scrubbed", 
+    -- Safety timeout: 15 minutes (900 seconds) for complete startup + taxi + takeoff
+    if elapsedTime > 900 and not self:Is(BOMBER.States.CLIMBING) and not self:Is(BOMBER.States.CRUISE) then
+      BASE:E(string.format("%s: ERROR - Startup/departure timeout after 15 minutes", self.Callsign))
+      self:_BroadcastMessage(string.format("%s: ❌ Aircraft departure failure after 15 minutes - mission scrubbed", 
         self.Callsign))
       
       if self.EngineStartMonitor then
@@ -3056,18 +3060,6 @@ function BOMBER:_MonitorEngineStart()
     end
     
   end, {}, 2, 5)  -- Check every 5 seconds
-end
-      
-      if self.EngineStartMonitor then
-        self.EngineStartMonitor:Stop()
-        self.EngineStartMonitor = nil
-      end
-      
-      -- Scrub mission and cleanup
-      self:_ScrubMission("Startup/taxi timeout")
-    end
-    
-  end, {}, 5, 5)  -- Check every 5 seconds
 end
 
 --- Monitor waypoint progress
@@ -4726,6 +4718,21 @@ function BOMBER:_ScrubMission(reason)
   -- Broadcast final message
   self:_BroadcastMessage(string.format("%s: ❌ MISSION SCRUBBED - %s", self.Callsign, reason))
   
+  -- Clean up airbase if we're scrubbing due to blockage
+  if reason and string.find(reason:lower(), "block") and self.StartAirbase then
+    BASE:I(string.format("%s: Running airbase cleanup at %s to remove obstructions", self.Callsign, self.StartAirbase))
+    
+    -- Create temporary cleanup for this airbase
+    local cleanup = CLEANUP_AIRBASE:New(self.StartAirbase)
+    
+    -- Force immediate cleanup pass
+    if cleanup and cleanup.__ and cleanup.__.CleanUpSchedule then
+      cleanup.__.CleanUpSchedule(cleanup.__)
+    end
+    
+    self:_BroadcastMessage(string.format("%s: Airbase cleanup complete - obstructions removed", self.Callsign))
+  end
+  
   -- Despawn the bomber group
   if self.Group and self.Group:IsAlive() then
     BASE:I(string.format("%s: Despawning bomber group", self.Callsign))
@@ -4739,7 +4746,7 @@ function BOMBER:_ScrubMission(reason)
   
   -- Notify mission manager to clean up mission record
   if _BOMBER_MISSION_MANAGER then
-    _BOMBER_MISSION_MANAGER:OnMissionFailed(self.Coalition, self.Callsign, reason)
+    _BOMBER_MISSION_MANAGER:UnregisterMission(self)
   end
 end
 
