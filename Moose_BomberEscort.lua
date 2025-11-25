@@ -156,6 +156,10 @@ BOMBER_ESCORT_CONFIG = {
   RTBLandingStuckTime = 90,            -- Seconds - time allowed to loiter on the landing leg before forcing a land task
   RTBLandingSnapshotInterval = 15,     -- Seconds - minimum interval between repeated landing debug snapshots (set lower for more spam)
   RTBLandingDespawnDelaySeconds = 60, -- Optional - auto-despawn bomber this many seconds after a landing fallback if it still hasn't landed 
+
+  -- Debug/Instrumentation
+  EnableRouteDebugSnapshots = true,    -- Dump controller route tables after each route apply (set false to disable heavy TRACE logs)
+  RouteSnapshotDelaySeconds = 0.75,    -- Delay before sampling controller route (allows DCS AI to register the new plan)
 }
 
 ---
@@ -202,7 +206,7 @@ BOMBER_PROFILE.DB = {
     CruiseAlt = 20000, -- feet
     MaxAlt = 28000,
     MinAlt = 5000,
-    DefaultFlightSize = 4, -- Default number of aircraft if not specified
+    DefaultFlightSize = 1, -- Default number of aircraft if not specified
     HasDefensiveGuns = true,
     FormationTight = true, -- Prefers tight formations
     EvasionCapability = "Low", -- Poor, Low, Medium, High
@@ -222,7 +226,7 @@ BOMBER_PROFILE.DB = {
     CruiseAlt = 18000,
     MaxAlt = 26000,
     MinAlt = 5000,
-    DefaultFlightSize = 4,
+    DefaultFlightSize = 1,
     HasDefensiveGuns = true,
     FormationTight = true,
     EvasionCapability = "Low",
@@ -3135,7 +3139,11 @@ function BOMBER_MISSION:_BuildRoute()
   end
   
   -- Store route
-  self.Bomber.Route = waypoints
+  if self.Bomber and self.Bomber.SetMissionRoute then
+    self.Bomber:SetMissionRoute(waypoints, "Mission build complete")
+  else
+    self.Bomber.Route = waypoints
+  end
   
   BOMBER_LOGGER:Info("ROUTE", "Route built: %d waypoints", #waypoints)
 end
@@ -3880,6 +3888,10 @@ function BOMBER:New(templateName, missionData)
   self.RouteStartAuthorized = not self.Profile.EscortRequired  -- Require explicit escort clearance before taxiing
   self.AIHoldForEscort = false  -- Disable AI controller while waiting for escort
   self.ThreatManagerStarted = false
+  self.PlaceholderGroup = nil  -- Staged bomber used while waiting for escorts
+  self.PlaceholderSpawnIndex = nil
+  self.PlaceholderActive = false
+  self.MissionGroupSpawned = false
   
   -- Attack tracking flags for event-driven messages
   self.WeaponsReleased = false
@@ -3925,12 +3937,33 @@ end
 -- @param #BOMBER self
 -- @return #boolean Success
 function BOMBER:Spawn()
-  -- Verify template exists before attempting spawn
+  if self.Profile.EscortRequired then
+    if not self:_SpawnPlaceholderGroup() then
+      return false
+    end
+    BOMBER_LOGGER:Info("ESCORT", "%s: Escort required - checking for ground escorts", self.Callsign)
+    self:__WaitForEscort(2)
+    return true
+  end
+
+  if not self:_SpawnOperationalGroup("Initial mission spawn") then
+    return false
+  end
+
+  BOMBER_LOGGER:Info("ESCORT", "%s: Escort not required - beginning mission immediately", self.Callsign)
+  self.RouteStartAuthorized = true
+  self:_StartRoute("Escort not required")
+  self:__StartEngines(2)
+  return true
+end
+
+-- Internal helper: ensure SPAWN object exists for this template and is configured
+-- @param #BOMBER self
+-- @return #SPAWN|nil
+function BOMBER:_GetOrCreateSpawner()
   local templateGroup = GROUP:FindByName(self.TemplateName)
   if not templateGroup then
     BOMBER_LOGGER:Error("SPAWN", "ERROR: Template group '%s' not found in mission", self.TemplateName)
-    
-    -- Send message to coalition
     trigger.action.outTextForCoalition(
       self.Coalition,
       string.format(
@@ -3945,14 +3978,9 @@ function BOMBER:Spawn()
       ),
       30
     )
-    return false
+    return nil
   end
-  
-  -- Increment global spawn counter for unique spawn index
-  _BOMBER_GLOBAL_SPAWN_COUNTER = _BOMBER_GLOBAL_SPAWN_COUNTER + 1
-  local spawnIndex = _BOMBER_GLOBAL_SPAWN_COUNTER
-  
-  -- Get or create SPAWN object for this template (reuse same object to prevent MOOSE conflicts)
+
   if not _BOMBER_SPAWN_OBJECTS[self.TemplateName] then
     _BOMBER_SPAWN_OBJECTS[self.TemplateName] = SPAWN:New(self.TemplateName)
       :InitCoalition(self.Coalition)
@@ -3960,26 +3988,36 @@ function BOMBER:Spawn()
       :InitLimit(100, 0)
     BOMBER_LOGGER:Debug("SPAWN", "Created new SPAWN object for template: %s", self.TemplateName)
   end
-  
+
   local spawner = _BOMBER_SPAWN_OBJECTS[self.TemplateName]
-  
-  -- Update grouping for this specific spawn
   spawner:InitGrouping(self.FlightSize)
-  spawner:InitUnControlled(self.Profile.EscortRequired)
-  
+  return spawner
+end
+
+-- Internal helper: execute a spawn using the provided SPAWN object
+-- @param #BOMBER self
+-- @param #SPAWN spawner
+-- @return #GROUP|nil, #number spawnIndex
+function BOMBER:_SpawnGroupFromSpawner(spawner)
+  if not spawner then
+    return nil, nil
+  end
+
+  _BOMBER_GLOBAL_SPAWN_COUNTER = _BOMBER_GLOBAL_SPAWN_COUNTER + 1
+  local spawnIndex = _BOMBER_GLOBAL_SPAWN_COUNTER
+
   BOMBER_LOGGER:Info("SPAWN", "Spawning %s (#%d) from template %s", self.Callsign, spawnIndex, self.TemplateName)
-  
-  -- Spawn at the requested airbase if specified
+
   local spawnedGroup = nil
+
   if self.StartAirbase then
     local airbase = AIRBASE:FindByName(self.StartAirbase)
     if airbase then
       BOMBER_LOGGER:Info("SPAWN", "Spawning %s at airbase: %s", self.Callsign, self.StartAirbase)
       local success, result = pcall(function()
-        -- Spawn normally - reusing same SPAWN object prevents cleanup conflicts
         return spawner:SpawnAtAirbase(airbase, SPAWN.Takeoff.Cold)
       end)
-      
+
       if success then
         spawnedGroup = result
       else
@@ -3989,14 +4027,13 @@ function BOMBER:Spawn()
       BOMBER_LOGGER:Error("SPAWN", "ERROR: Airbase '%s' not found for spawn", self.StartAirbase)
     end
   end
-  
-  -- Fallback to normal spawn if airbase spawn failed
+
   if not spawnedGroup then
     BOMBER_LOGGER:Info("SPAWN", "Using template location spawn for %s (#%d)", self.Callsign, spawnIndex)
     local success, result = pcall(function()
       return spawner:Spawn()
     end)
-    
+
     if not success then
       BOMBER_LOGGER:Error("SPAWN", "ERROR: Exception during spawn: %s", tostring(result))
       trigger.action.outTextForCoalition(
@@ -4011,14 +4048,12 @@ function BOMBER:Spawn()
         ),
         30
       )
-      return false
+      return nil, nil
     end
     spawnedGroup = result
   end
-  
-  self.Group = spawnedGroup
-  
-  if not self.Group then
+
+  if not spawnedGroup then
     BOMBER_LOGGER:Error("SPAWN", "ERROR: Failed to spawn bomber group (returned nil)")
     trigger.action.outTextForCoalition(
       self.Coalition,
@@ -4031,116 +4066,429 @@ function BOMBER:Spawn()
       ),
       30
     )
-    return false
+    return nil, nil
   end
-  
-  -- Rename the group to use callsign for F10 map display
-  local dcsGroup = self.Group:GetDCSObject()
-  if dcsGroup then
-    local newName = string.format("%s #%03d", self.Callsign, spawnIndex)
-    pcall(function()
-      dcsGroup:rename(newName)
-      BOMBER_LOGGER:Debug("SPAWN", "Renamed group to: %s", newName)
-    end)
+
+  return spawnedGroup, spawnIndex
+end
+
+-- Internal helper: rename spawned group for clarity
+-- @param #BOMBER self
+-- @param #GROUP group
+-- @param #number spawnIndex
+-- @param #string suffix
+function BOMBER:_RenameSpawnedGroup(group, spawnIndex, suffix)
+  local dcsGroup = group and group:GetDCSObject()
+  if not dcsGroup then
+    return
   end
-  
-  -- CRITICAL: Stop any default route from template
-  -- The template might have a route set in mission editor, clear it immediately
-  BOMBER_LOGGER:Debug("SPAWN", "%s: Clearing template route to prevent auto-taxi", self.Callsign)
-  self.Group:RouteStop()  -- Stop any existing route/taxi orders
-  
+
+  suffix = suffix or ""
+  local newName = string.format("%s #%03d%s", self.Callsign, spawnIndex, suffix)
+  pcall(function()
+    dcsGroup:rename(newName)
+    BOMBER_LOGGER:Debug("SPAWN", "Renamed group to: %s", newName)
+  end)
+end
+
+-- Internal helper: initialize full mission systems once the real bomber is spawned
+function BOMBER:_InitializeOperationalSystems()
   self.MissionStartTime = timer.getTime()
-  
-  -- Initialize monitoring systems (but don't start escort monitor yet if holding)
-  self.EscortMonitor = BOMBER_ESCORT_MONITOR:New(self)  -- Create but don't start
+
+  self.EscortMonitor = BOMBER_ESCORT_MONITOR:New(self)
   self.ThreatManager = BOMBER_THREAT_MANAGER:New(self)
   self.ThreatManagerStarted = false
-  
-  -- Initialize SAM avoidance router
+
   if BOMBER_ESCORT_CONFIG.EnableSAMAvoidance then
     self.SAMRouter = BOMBER_SAM_AVOIDANCE_ROUTER:New(self)
     BOMBER_LOGGER:Info("THREAT", "%s: SAM avoidance router initialized", self.Callsign)
-    
-    -- Schedule periodic SAM reroute checks
+
     local rerouteInterval = BOMBER_ESCORT_CONFIG.SAMRerouteCheckInterval or 15
     self.SAMRerouteScheduler = SCHEDULER:New(nil,
       function()
         if self and self:IsAlive() and self.SAMRouter then
-          -- Only check reroute when actively flying to target
           if self:Is(BOMBER.States.CRUISE) or self:Is(BOMBER.States.CLIMBING) then
             self:_CheckSAMReroute()
           end
         end
-      end, {}, 20, rerouteInterval) -- First check after 20 seconds, then every 15 seconds
-    
+      end, {}, 20, rerouteInterval)
+
     BOMBER_LOGGER:Debug("THREAT", "%s: SAM reroute checker scheduled every %d seconds", self.Callsign, rerouteInterval)
   end
-  
-  -- Start SAM status summary scheduler (runs every 80 seconds)
+
   local summaryInterval = BOMBER_ESCORT_CONFIG.SAMStatusSummaryInterval or 80
-  self.SAMStatusScheduler = SCHEDULER:New(nil, 
+  self.SAMStatusScheduler = SCHEDULER:New(nil,
     function()
       if self and self:IsAlive() then
         self:_UpdateSAMStatusSummary()
       end
-    end, {}, 15, summaryInterval) -- First run after 15 seconds, then every 80 seconds
-  
+    end, {}, 15, summaryInterval)
+
   BOMBER_LOGGER:Debug("THREAT", "%s: SAM status summary scheduled every %d seconds", self.Callsign, summaryInterval)
-  
-  -- Initialize formation manager
+
   self.FormationManager = BOMBER_FORMATION:New(self)
   self.FormationManager:Apply()
-  
-  -- Set up event handlers
+
   self:_SetupEventHandlers()
-  
-  -- Set ROE and ROT - WEAPONS FREE to allow bombing tasks to execute
+
   self.Group:OptionROEWeaponFree()
   self.Group:OptionROTPassiveDefense()
-  
-  -- Set alarm state to allow weapon employment
   self.Group:OptionAlarmStateGreen()
-  
-  -- Allow RTB on out of ammo (let them go home when winchester)
   self.Group:OptionRTBAmmo(true)
-  
+
   BOMBER_LOGGER:Info("SPAWN", "%s: ROE=WEAPONS FREE, Alarm=GREEN, RTB on winchester=ON", self.Callsign)
-  
-  -- If route exists, prepare it (but don't start yet if holding for escort)
+
   if self.Route and #self.Route > 0 then
-    -- Don't start route yet - check for escort first
     BOMBER_LOGGER:Info("SPAWN", "%s: Route prepared, checking escort requirements", self.Callsign)
   else
     BOMBER_LOGGER:Warn("ROUTE", "%s: No route defined for bomber", self.Callsign)
   end
-  
+
   BOMBER_LOGGER:Info("SPAWN", "Bomber %s spawned: %s x%d", self.Callsign, self.Profile.DisplayName, self.FlightSize)
-  
-  -- Check if escort is required
-  if self.Profile.EscortRequired then
-    local controller = self:_GetGroupController()
-    if controller and controller.setOnOff then
-      controller:setOnOff(false)
-      self.AIHoldForEscort = true
-      BOMBER_LOGGER:Debug("ESCORT", "%s: AI controller disabled while waiting for escort", self.Callsign)
-    else
-      BOMBER_LOGGER:Warn("ESCORT", "%s: Unable to disable AI controller while waiting for escort (controller unavailable)", self.Callsign)
-    end
-    BOMBER_LOGGER:Info("ESCORT", "%s: Escort required - checking for ground escorts", self.Callsign)
-    self:__WaitForEscort(2)  -- Transition to HOLDING state after 2 seconds
-  else
-    BOMBER_LOGGER:Info("ESCORT", "%s: Escort not required - beginning mission immediately", self.Callsign)
-    self.RouteStartAuthorized = true
-    self:_StartRoute("Escort not required")
-    -- Transition directly to ENGINE_STARTING since route is commanded
-    self:__StartEngines(2)
+end
+
+-- Spawn the fully configured mission bomber (used when no escort required or when escorts arrive)
+function BOMBER:_SpawnOperationalGroup(reason)
+  local spawner = self:_GetOrCreateSpawner()
+  if not spawner then
+    return false
   end
-  
+
+  -- Ensure the real bomber spawns fully controlled so DCS keeps the commanded route
+  spawner:InitUnControlled(false)
+  BOMBER_LOGGER:Trace("SPAWN", "%s: Configured spawner for operational group (controlled)", self.Callsign)
+
+  local spawnedGroup, spawnIndex = self:_SpawnGroupFromSpawner(spawner)
+  if not spawnedGroup then
+    return false
+  end
+
+  self.Group = spawnedGroup
+  self.PlaceholderGroup = nil
+  self.PlaceholderActive = false
+  self.PlaceholderSpawnIndex = nil
+  self.MissionGroupSpawned = true
+
+  self:_RenameSpawnedGroup(spawnedGroup, spawnIndex)
+
+  BOMBER_LOGGER:Debug("SPAWN", "%s: Clearing template route to prevent auto-taxi", self.Callsign)
+  self:_LogRouteState("SpawnOperationalGroup-preClear")
+  spawnedGroup:RouteStop()
+
+  if self:_EnsureRouteLoaded("operational spawn preload") and self.Route and #self.Route > 0 then
+    if self:_ApplyGroupRoute(self.Route, reason or "mission route", 1) then
+      BOMBER_LOGGER:Debug("ROUTE", "%s: Mission route preloaded prior to start", self.Callsign)
+    end
+  else
+    BOMBER_LOGGER:Warn("ROUTE", "%s: No mission route available to preload (%s)", self.Callsign, reason or "unspecified")
+  end
+
+  self:_InitializeOperationalSystems()
+  return true
+end
+
+-- Spawn a placeholder bomber that simply holds position until an escort arrives
+function BOMBER:_SpawnPlaceholderGroup()
+  local spawner = self:_GetOrCreateSpawner()
+  if not spawner then
+    return false
+  end
+
+  -- Placeholders must remain cold/uncontrolled while waiting for escorts
+  spawner:InitUnControlled(true)
+  BOMBER_LOGGER:Trace("SPAWN", "%s: Configured spawner for placeholder (uncontrolled)", self.Callsign)
+
+  local placeholderGroup, spawnIndex = self:_SpawnGroupFromSpawner(spawner)
+  if not placeholderGroup then
+    return false
+  end
+
+  self.Group = placeholderGroup
+  self.PlaceholderGroup = placeholderGroup
+  self.PlaceholderSpawnIndex = spawnIndex
+  self.PlaceholderActive = true
+  self.MissionGroupSpawned = false
+
+  self:_RenameSpawnedGroup(placeholderGroup, spawnIndex, " (HOLD)")
+
+  BOMBER_LOGGER:Debug("SPAWN", "%s: Clearing template route for placeholder spawn", self.Callsign)
+  placeholderGroup:RouteStop()
+  if placeholderGroup.CommandStopRoute and placeholderGroup.SetCommand then
+    placeholderGroup:SetCommand(placeholderGroup:CommandStopRoute(true))
+  end
+
+  self:_EnsureRouteLoaded("placeholder staging check")
+  self:_LogRouteState("SpawnPlaceholderGroup")
+
+  BOMBER_LOGGER:Info("SPAWN", "%s: Placeholder bomber staged at %s while waiting for escort", self.Callsign, self.StartAirbase or "template location")
+  return true
+end
+
+-- Remove the placeholder bomber if it still exists
+function BOMBER:_DestroyPlaceholderGroup(reason)
+  if not self.PlaceholderGroup then
+    return
+  end
+
+  local group = self.PlaceholderGroup
+  self.PlaceholderGroup = nil
+  self.PlaceholderActive = false
+  self.PlaceholderSpawnIndex = nil
+
+  if self.Group == group then
+    self.Group = nil
+  end
+
+  if group and group.IsAlive and group:IsAlive() then
+    BOMBER_LOGGER:Debug("SPAWN", "%s: Removing placeholder bomber (%s)", self.Callsign, reason or "cleanup")
+    group:Destroy()
+  end
+end
+
+-- Ensure the real mission bomber exists (spawns it on-demand when escorts arrive)
+function BOMBER:_EnsureOperationalGroup(reason)
+  self:_LogRouteState("EnsureOperationalGroup-enter")
+  if self.MissionGroupSpawned then
+    return true
+  end
+
+  self:_DestroyPlaceholderGroup("activating mission group")
+
+  if not self:_SpawnOperationalGroup(reason or "Escort clearance") then
+    BOMBER_LOGGER:Error("SPAWN", "%s: Failed to activate operational bomber (%s)", self.Callsign, reason or "unknown")
+    return false
+  end
+
+  self:_LogRouteState("EnsureOperationalGroup-exit")
   return true
 end
 
 --- Start flying the route
 -- @param #BOMBER self
+function BOMBER:_CloneRoutePoints(routeTable)
+  if not routeTable then
+    return nil
+  end
+
+  -- Preserve shared table references inside route/task structures to keep DCS happy.
+  local visited = {}
+
+  local function clone(value)
+    if type(value) ~= "table" then
+      return value
+    end
+
+    if visited[value] then
+      return visited[value]
+    end
+
+    local copied = {}
+    visited[value] = copied
+
+    for key, nested in pairs(value) do
+      copied[clone(key)] = clone(nested)
+    end
+
+    return copied
+  end
+
+  -- Route tables are strictly array-like; use ipairs to preserve order.
+  local clonedRoute = {}
+  for index, point in ipairs(routeTable) do
+    clonedRoute[index] = clone(point)
+  end
+
+  return clonedRoute
+end
+
+function BOMBER:_LogRouteState(context)
+  local callsign = self.Callsign or "BOMBER"
+  local currentCount = self.Route and #self.Route or 0
+  local storedCount = self.MissionRoutePlan and #self.MissionRoutePlan or 0
+  local originalCount = self.OriginalRoute and #self.OriginalRoute or 0
+  BOMBER_LOGGER:Trace(
+    "ROUTE",
+    "%s: RouteState[%s] current=%d stored=%d original=%d",
+    callsign,
+    context or "unspecified",
+    currentCount,
+    storedCount,
+    originalCount
+  )
+end
+
+function BOMBER:SetMissionRoute(routeTable, reason)
+  local callsign = self.Callsign or "BOMBER"
+  reason = reason or "unspecified"
+
+  if not routeTable or #routeTable == 0 then
+    BOMBER_LOGGER:Warn("ROUTE", "%s: Attempted to store empty mission route (%s)", callsign, reason)
+    self.Route = nil
+    self.MissionRoutePlan = nil
+    self:_LogRouteState("SetMissionRoute-empty")
+    return
+  end
+
+  local activeRoute = self:_CloneRoutePoints(routeTable)
+  local storedRoute = self:_CloneRoutePoints(routeTable)
+
+  if not activeRoute or not storedRoute then
+    BOMBER_LOGGER:Error("ROUTE", "%s: Failed to clone mission route (%s)", self.Callsign, reason)
+    return
+  end
+
+  self.Route = activeRoute
+  self.MissionRoutePlan = storedRoute
+
+  BOMBER_LOGGER:Debug("ROUTE", "%s: Mission route stored (%s) with %d waypoint(s)", callsign, reason, #activeRoute)
+  self:_LogRouteState("SetMissionRoute")
+end
+
+function BOMBER:_EnsureRouteLoaded(reason)
+  local callsign = self.Callsign or "BOMBER"
+  if self.Route and #self.Route > 0 then
+    return true
+  end
+
+  if self.MissionRoutePlan and #self.MissionRoutePlan > 0 then
+    self.Route = self:_CloneRoutePoints(self.MissionRoutePlan)
+    BOMBER_LOGGER:Warn("ROUTE", "%s: Route restored from MissionRoutePlan (%s)", callsign, reason or "unspecified")
+    self:_LogRouteState("EnsureRouteLoaded-plan")
+    return true
+  end
+
+  if self.OriginalRoute and #self.OriginalRoute > 0 then
+    self.Route = self:_CloneRoutePoints(self.OriginalRoute)
+    BOMBER_LOGGER:Warn("ROUTE", "%s: Route restored from OriginalRoute backup (%s)", callsign, reason or "unspecified")
+    self:_LogRouteState("EnsureRouteLoaded-original")
+    return true
+  end
+
+  BOMBER_LOGGER:Error("ROUTE", "%s: No route data available (%s)", callsign, reason or "unspecified")
+  self:_LogRouteState("EnsureRouteLoaded-missing")
+  return false
+end
+
+function BOMBER:_DumpControllerRoute(label)
+  label = label or "unspecified"
+  local callsign = self.Callsign or "BOMBER"
+  local controller, controllerErr = self:_GetActiveController()
+  if not controller then
+    BOMBER_LOGGER:Warn("ROUTE", "%s: Controller route snapshot skipped (%s) [%s]", callsign, controllerErr or "controller missing", label)
+    return
+  end
+
+  local routePoints = nil
+  local source = nil
+
+  local missionTask, taskErr = self:_GetControllerMissionTask(controller)
+  if missionTask then
+    routePoints = missionTask.params and missionTask.params.route and missionTask.params.route.points
+    if routePoints and #routePoints > 0 then
+      source = "controller:getTask"
+    end
+  end
+
+  if (not routePoints or #routePoints == 0) and self.Group and self.Group.GetTaskRoute then
+    local ok, groupRoute = pcall(function()
+      return self.Group:GetTaskRoute()
+    end)
+
+    if ok and groupRoute and #groupRoute > 0 then
+      routePoints = groupRoute
+      source = source and (source .. "+group:GetTaskRoute") or "group:GetTaskRoute"
+    elseif not ok then
+      taskErr = string.format("GetTaskRoute threw '%s'", tostring(groupRoute))
+    end
+  end
+
+  if not routePoints or #routePoints == 0 then
+    BOMBER_LOGGER:Warn("ROUTE", "%s: Controller route snapshot unavailable (%s) [%s]", callsign, taskErr or "task missing", label)
+    return
+  end
+
+  BOMBER_LOGGER:Debug("ROUTE", "%s: Controller route snapshot [%s via %s] - %d waypoint(s)", callsign, label, source or "unknown", #routePoints)
+  for idx, point in ipairs(routePoints) do
+    local coordDesc = "(coords unavailable)"
+    if point.x and point.y then
+      local wpCoord = COORDINATE:New(point.x, point.alt or 0, point.y)
+      coordDesc = wpCoord:ToStringLLDMS()
+    end
+
+    local altitudeFeet = 0
+    if point.alt then
+      if UTILS and UTILS.MetersToFeet then
+        altitudeFeet = UTILS.MetersToFeet(point.alt)
+      else
+        altitudeFeet = point.alt * 3.28084
+      end
+    end
+
+    local speedKnots = 0
+    if point.speed then
+      speedKnots = point.speed / 0.514444
+    end
+
+    local action = point.action or point.type or "UNKNOWN"
+    local taskCount = 0
+    local tasks = point.task and point.task.params and point.task.params.tasks
+    if tasks and type(tasks) == "table" then
+      taskCount = #tasks
+    end
+
+    BOMBER_LOGGER:Trace(
+      "ROUTE",
+      "%s:   [%s] WP %d -> %s | alt %.0fft | spd %.0fkts | action %s | tasks %d",
+      callsign,
+      label,
+      idx,
+      coordDesc,
+      altitudeFeet,
+      speedKnots,
+      action,
+      taskCount
+    )
+  end
+end
+
+function BOMBER:_ScheduleRouteSnapshot(label, delaySeconds)
+  if not BOMBER_ESCORT_CONFIG.EnableRouteDebugSnapshots then
+    return
+  end
+
+  local delay = delaySeconds or BOMBER_ESCORT_CONFIG.RouteSnapshotDelaySeconds or 0.75
+  if delay < 0.1 then delay = 0.1 end
+
+  local callsign = self.Callsign or "BOMBER"
+  BOMBER_LOGGER:Trace("ROUTE", "%s: Scheduling controller route snapshot [%s] in %.1fs", callsign, label or "unspecified", delay)
+
+  SCHEDULER:New(nil, function()
+    if not self.Group or not self.Group:IsAlive() then
+      BOMBER_LOGGER:Trace("ROUTE", "%s: Skipping route snapshot [%s] - group inactive", callsign, label or "unspecified")
+      return
+    end
+    self:_DumpControllerRoute(label)
+  end, {}, delay)
+end
+
+function BOMBER:_ApplyGroupRoute(routeTable, reason, startIndex)
+  if not self.Group or not routeTable or #routeTable == 0 then
+    return false
+  end
+
+  local routeCopy = self:_CloneRoutePoints(routeTable)
+  if not routeCopy then
+    return false
+  end
+
+  local startAt = startIndex or 1
+  self.Group:Route(routeCopy, startAt)
+  local context = reason or "unspecified"
+  BOMBER_LOGGER:Debug("ROUTE", "%s: Applied route (%s) with %d waypoint(s)", self.Callsign, context, #routeTable)
+  self:_ScheduleRouteSnapshot(string.format("%s (WP%d)", context, startAt or 1))
+  return true
+end
+
 function BOMBER:_StartRoute(startReason)
   startReason = startReason or "unspecified"
 
@@ -4149,6 +4497,13 @@ function BOMBER:_StartRoute(startReason)
      and not self.RouteStartAuthorized then
     BOMBER_LOGGER:Warn("ESCORT", "%s: StartRoute blocked (%s) while in %s - escort authorization missing", self.Callsign, startReason, self.CurrentState or "Unknown")
     return
+  end
+
+  self:_LogRouteState("StartRoute-preEnsure")
+  if not self.MissionGroupSpawned then
+    if not self:_EnsureOperationalGroup(startReason) then
+      return
+    end
   end
 
   -- Reset authorization so subsequent starts require a fresh escort check
@@ -4165,9 +4520,15 @@ function BOMBER:_StartRoute(startReason)
     self.AIHoldForEscort = false
   end
 
-  if not self.Route or #self.Route == 0 then
+  if self.Group and self.Group.SetCommand and self.Group.CommandStopRoute then
+    self.Group:SetCommand(self.Group:CommandStopRoute(false))
+  end
+
+  if not self:_EnsureRouteLoaded("route start") then
+    BOMBER_LOGGER:Error("ROUTE", "%s: StartRoute aborted - no waypoints (%s)", self.Callsign, startReason)
     return
   end
+  self:_LogRouteState("StartRoute-postEnsure")
   
   BOMBER_LOGGER:Info("ROUTE", "%s: Starting route (%s) with %d waypoints", self.Callsign, startReason, #self.Route)
   
@@ -4185,8 +4546,11 @@ function BOMBER:_StartRoute(startReason)
   BOMBER_LOGGER:Info("FSM", "%s: Group activated (engines starting)", self.Callsign)
   
   -- Route the group (DCS AI will handle cold start -> taxi -> takeoff)
-  self.Group:Route(self.Route)
-  BOMBER_LOGGER:Info("FSM", "%s: Route commanded - cold start sequence will take ~6 minutes", self.Callsign)
+  if self:_ApplyGroupRoute(self.Route, startReason, 1) then
+    BOMBER_LOGGER:Info("FSM", "%s: Route commanded - cold start sequence will take ~6 minutes", self.Callsign)
+  else
+    BOMBER_LOGGER:Warn("ROUTE", "%s: Unable to apply mission route during start", self.Callsign)
+  end
   
   -- Set up waypoint monitoring
   self:_MonitorWaypoints()
@@ -6136,10 +6500,12 @@ function BOMBER:OnEscortArrived(escortCount)
       -- Resume original route to target
       if self.OriginalRoute then
         BOMBER_LOGGER:Info("ROUTE", "%s: Restoring original route with %d waypoints", self.Callsign, #self.OriginalRoute)
-        self.Group:Route(self.OriginalRoute, 1)
-        
-        -- Restart waypoint monitoring
-        self:_MonitorWaypoints()
+        if self:_ApplyGroupRoute(self.OriginalRoute, "restoring original mission route", 1) then
+          -- Restart waypoint monitoring
+          self:_MonitorWaypoints()
+        else
+          BOMBER_LOGGER:Error("ROUTE", "%s: Failed to reapply original route during resume", self.Callsign)
+        end
       else
         BOMBER_LOGGER:Error("ROUTE", "%s: ERROR - No original route saved, cannot resume", self.Callsign)
       end
@@ -6829,9 +7195,12 @@ function BOMBER:_ApplySAMDetourRoute(corridor, finalTarget)
   table.insert(waypoints, targetWP)
   
   -- Apply the new route
-  self.Group:Route(waypoints)
-  
-  BOMBER_LOGGER:Info("THREAT", "%s: Applied detour route with %d waypoints", self.Callsign, #waypoints)
+  if self:_ApplyGroupRoute(waypoints, "SAM avoidance detour", 1) then
+    BOMBER_LOGGER:Info("THREAT", "%s: Applied detour route with %d waypoints", self.Callsign, #waypoints)
+  else
+    BOMBER_LOGGER:Error("THREAT", "%s: Failed to apply SAM avoidance detour route", self.Callsign)
+    return
+  end
   
   -- Track that we've rerouted (keep last 10 reroutes to prevent unbounded growth)
   table.insert(self.SAMRouter.RouteHistory, {
@@ -6962,20 +7331,24 @@ function BOMBER:_HandleHoldingTimeout()
   self.MissionCompleted = true
   self.AbortRequested = true
   
-  -- Despawn the bomber group
-  if self.Group and self.Group:IsAlive() then
+  -- Despawn whichever group is currently staged
+  if self.PlaceholderActive then
+    BOMBER_LOGGER:Info("MISSION", "%s: Removing placeholder bomber due to holding timeout", self.Callsign)
+    self:_DestroyPlaceholderGroup("holding timeout")
+  elseif self.Group and self.Group:IsAlive() then
     BOMBER_LOGGER:Info("MISSION", "%s: Despawning bomber group due to holding timeout", self.Callsign)
     self.Group:Destroy()
   end
   
   -- Transition to DESTROYED state for proper cleanup
-  self:__Destroyed(0)
+  self:__Destroy(0)
 end
 
 --- FSM State: Holding (waiting for escort on ground)
 -- @param #BOMBER self
 function BOMBER:onenterHolding()
   BOMBER_LOGGER:Info("FSM", "%s: STATE CHANGE - HOLDING (waiting for escort)", self.Callsign)
+  self:_LogRouteState("EnterHolding")
 
   -- Ensure we stay put until an escort explicitly clears us to taxi
   self.RouteStartAuthorized = false
@@ -7036,6 +7409,43 @@ function BOMBER:onenterHolding()
       return
     end
     
+    local bomberVelocity = (self.Group and self.Group:GetVelocityKNOTS()) or 0
+    local bomberAltitude = (self.Group and self.Group:GetAltitude()) or 0
+    local bomberCoord = self.Group and self.Group:GetCoordinate()
+    local bomberVec2 = bomberCoord and bomberCoord:GetVec2()
+    BOMBER_LOGGER:Debug(
+      "ESCORT",
+      "%s: Hold scan context - posX=%.1f posZ=%.1f alt=%.0fm vel=%.1fkts routeAuth=%s waitingEscort=%s aiDisabled=%s",
+      self.Callsign,
+      bomberVec2 and bomberVec2.x or 0,
+      bomberVec2 and bomberVec2.y or 0,
+      bomberAltitude,
+      bomberVelocity,
+      tostring(self.RouteStartAuthorized),
+      tostring(self.WaitingForEscortDeparture),
+      tostring(self.AIHoldForEscort)
+    )
+
+    if self:Is(BOMBER.States.HOLDING) and bomberVelocity and bomberVelocity > 2 then
+      BOMBER_LOGGER:Warn(
+        "ESCORT",
+        "%s: Detected unintended ground movement while holding (%.1f kts) - forcing stop",
+        self.Callsign,
+        bomberVelocity
+      )
+
+      local controller = self:_GetGroupController()
+      if controller and controller.setOnOff then
+        controller:setOnOff(false)
+      end
+
+      if self.Group and self.Group.SetCommand and self.Group.CommandStopRoute then
+        self.Group:SetCommand(self.Group:CommandStopRoute(true))
+      end
+
+      return
+    end
+
     local escortsFound = self:_ScanForGroundEscorts()
     
     if escortsFound and #escortsFound > 0 then
@@ -7137,6 +7547,19 @@ function BOMBER:_ScanForGroundEscorts()
   
   local bomberCoord = self.Group:GetCoordinate()
   if not bomberCoord then return {} end
+
+  local bomberVelocity = (self.Group and self.Group:GetVelocityKNOTS()) or 0
+  local bomberAltitude = (self.Group and self.Group:GetAltitude()) or 0
+  local bomberVec2 = bomberCoord:GetVec2()
+  BOMBER_LOGGER:Debug(
+    "ESCORT",
+    "%s: Bomber status pre-scan - posX=%.1f posZ=%.1f alt=%.0fm vel=%.1fkts",
+    self.Callsign,
+    bomberVec2 and bomberVec2.x or 0,
+    bomberVec2 and bomberVec2.y or 0,
+    bomberAltitude,
+    bomberVelocity
+  )
   
   local escorts = {}
   local GROUND_ESCORT_RANGE = 1000  -- meters
@@ -7872,8 +8295,11 @@ function BOMBER:onenterAborting()
       self.RTBLandingStuckSeconds = 0
 
       if #route > 0 then
-        group:Route(route, 1)
-        BOMBER_LOGGER:Info("RTB", "%s: RTB route programmed with %d waypoint(s) (%d approach + landing)", self.Callsign, #route, approachLegs)
+        if self:_ApplyGroupRoute(route, "RTB landing plan", 1) then
+          BOMBER_LOGGER:Info("RTB", "%s: RTB route programmed with %d waypoint(s) (%d approach + landing)", self.Callsign, #route, approachLegs)
+        else
+          BOMBER_LOGGER:Error("RTB", "%s: Failed to apply RTB route with %d waypoint(s)", self.Callsign, #route)
+        end
         for idx, wp in ipairs(route) do
           if wp.x and wp.y then
             local wpCoord = COORDINATE:New(wp.x, wp.alt or 0, wp.y)
@@ -8003,6 +8429,7 @@ end
 function BOMBER:_ScrubMission(reason)
   BOMBER_LOGGER:Error("MISSION", "%s: Mission scrubbed - %s", self.Callsign, reason)
   self:_CancelLandingFailureDespawn("scrub mission")
+  self:_DestroyPlaceholderGroup(reason or "scrub mission")
   
   -- Stop all monitors
   if self.HoldingCheck then
@@ -8090,6 +8517,7 @@ end
 function BOMBER:Destroy()
   -- Stop holding check if active
   self:_CancelLandingFailureDespawn("destroy")
+  self:_DestroyPlaceholderGroup("destroy")
   if self.HoldingCheck then
     self.HoldingCheck:Stop()
     self.HoldingCheck = nil
