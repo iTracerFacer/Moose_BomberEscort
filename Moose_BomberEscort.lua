@@ -61,6 +61,21 @@ BOMBER_ESCORT_CONFIG = {
   FighterThreatDistance = 75000,       -- Meters - Fighter detection range (default: 75km - extended for escort positioning time)
   ThreatCheckInterval = 10,            -- Seconds between threat scans (default: 10)
   
+  -- SAM Warning System
+  SAMProgressiveWarnings = {50000, 40000, 30000, 20000}, -- Meters - Range thresholds for progressive warnings
+  SAMStatusSummaryInterval = 80,       -- Seconds between SAM status summary messages (default: 80s = 1:20)
+  SAMAutoCountermeasureRange = 30000,  -- Meters - Auto-deploy countermeasures inside this range (default: 30km)
+  
+  -- SAM Avoidance and Dynamic Routing
+  EnableSAMAvoidance = true,           -- Enable dynamic SAM avoidance routing (default: true)
+  SAMAvoidanceBuffer = 15000,          -- Meters - Stay this far outside SAM max range (default: 15km buffer)
+  SAMCorridorMinWidth = 10000,         -- Meters - Minimum safe corridor width between SAMs (default: 10km)
+  SAMAvoidOnlyIfCanEngage = true,      -- Only avoid SAMs that can engage at current altitude (default: true)
+  SAMMaxDetourPercent = 50,            -- Max detour as % of direct distance (100km direct = max 150km detour)
+  SAMMaxDetourAbsolute = 100000,       -- Meters - Absolute max detour distance regardless of percent (default: 100km)
+  SAMRerouteCheckInterval = 15,        -- Seconds between route threat checks during flight (default: 15s)
+  SAMFuelReservePercent = 20,          -- Percent fuel reserve required for detours (default: 20%)
+  
   -- Dynamic Threat Assessment
   EnableThreatAssessment = true,       -- Enable dynamic threat-to-escort ratio checking (default: true)
   RequireEscortParity = true,          -- Require at least 1 escort per detected fighter (default: true)
@@ -1480,6 +1495,50 @@ BOMBER_THREAT_MANAGER.ThreatType = {
   UNKNOWN = "UNKNOWN"
 }
 
+--- SAM threat database with engagement parameters
+-- Ranges in meters, altitudes in feet
+BOMBER_THREAT_MANAGER.SAMDatabase = {
+  -- Short Range (SR) - Low to Medium altitude threats
+  ["SA-2"] = {name = "SA-2 Guideline", maxRange = 45000, minAlt = 1000, maxAlt = 82000, threat = "MEDIUM"},
+  ["SA-3"] = {name = "SA-3 Goa", maxRange = 25000, minAlt = 100, maxAlt = 45000, threat = "MEDIUM"},
+  ["SA-6"] = {name = "SA-6 Gainful", maxRange = 24000, minAlt = 100, maxAlt = 45000, threat = "HIGH"},
+  ["SA-8"] = {name = "SA-8 Gecko", maxRange = 15000, minAlt = 25, maxAlt = 16000, threat = "MEDIUM"},
+  ["SA-9"] = {name = "SA-9 Gaskin", maxRange = 5500, minAlt = 25, maxAlt = 11000, threat = "LOW"},
+  ["SA-11"] = {name = "SA-11 Gadfly", maxRange = 32000, minAlt = 100, maxAlt = 72000, threat = "HIGH"},
+  ["SA-13"] = {name = "SA-13 Gopher", maxRange = 5000, minAlt = 25, maxAlt = 11000, threat = "LOW"},
+  ["SA-15"] = {name = "SA-15 Gauntlet", maxRange = 12000, minAlt = 25, maxAlt = 20000, threat = "MEDIUM"},
+  ["SA-19"] = {name = "SA-19 Grison", maxRange = 8000, minAlt = 25, maxAlt = 11000, threat = "MEDIUM"},
+  
+  -- Long Range (LR) - High altitude capable
+  ["SA-10"] = {name = "SA-10 Grumble", maxRange = 75000, minAlt = 100, maxAlt = 100000, threat = "CRITICAL"},
+  ["SA-20"] = {name = "SA-20 Gargoyle", maxRange = 120000, minAlt = 100, maxAlt = 100000, threat = "CRITICAL"},
+  ["SA-17"] = {name = "SA-17 Grizzly", maxRange = 50000, minAlt = 100, maxAlt = 75000, threat = "HIGH"},
+  
+  -- Russian designations (DCS often uses these names)
+  ["S-75"] = {name = "S-75 Dvina (SA-2)", maxRange = 45000, minAlt = 1000, maxAlt = 82000, threat = "MEDIUM"},
+  ["S-125"] = {name = "S-125 Neva (SA-3)", maxRange = 25000, minAlt = 100, maxAlt = 45000, threat = "MEDIUM"},
+  ["2K12"] = {name = "2K12 Kub (SA-6)", maxRange = 24000, minAlt = 100, maxAlt = 45000, threat = "HIGH"},
+  ["9K33"] = {name = "9K33 Osa (SA-8)", maxRange = 15000, minAlt = 25, maxAlt = 16000, threat = "MEDIUM"},
+  ["9K31"] = {name = "9K31 Strela-1 (SA-9)", maxRange = 5500, minAlt = 25, maxAlt = 11000, threat = "LOW"},
+  ["9K37"] = {name = "9K37 Buk (SA-11)", maxRange = 32000, minAlt = 100, maxAlt = 72000, threat = "HIGH"},
+  ["9K35"] = {name = "9K35 Strela-10 (SA-13)", maxRange = 5000, minAlt = 25, maxAlt = 11000, threat = "LOW"},
+  ["9K330"] = {name = "9K330 Tor (SA-15)", maxRange = 12000, minAlt = 25, maxAlt = 20000, threat = "MEDIUM"},
+  ["2K22"] = {name = "2K22 Tunguska (SA-19)", maxRange = 8000, minAlt = 25, maxAlt = 11000, threat = "MEDIUM"},
+  ["S-300PS"] = {name = "S-300PS (SA-10)", maxRange = 75000, minAlt = 100, maxAlt = 100000, threat = "CRITICAL"},
+  ["S-300PMU"] = {name = "S-300PMU (SA-10)", maxRange = 90000, minAlt = 100, maxAlt = 100000, threat = "CRITICAL"},
+  ["S-400"] = {name = "S-400 Triumf (SA-21)", maxRange = 150000, minAlt = 100, maxAlt = 100000, threat = "CRITICAL"},
+  ["9K317"] = {name = "9K317 Buk-M2 (SA-17)", maxRange = 50000, minAlt = 100, maxAlt = 75000, threat = "HIGH"},
+  
+  -- Western SAMs
+  ["Hawk"] = {name = "MIM-23 Hawk", maxRange = 40000, minAlt = 200, maxAlt = 60000, threat = "MEDIUM"},
+  ["Patriot"] = {name = "MIM-104 Patriot", maxRange = 80000, minAlt = 200, maxAlt = 80000, threat = "CRITICAL"},
+  ["Roland"] = {name = "Roland", maxRange = 8000, minAlt = 20, maxAlt = 18000, threat = "MEDIUM"},
+  ["Rapier"] = {name = "Rapier", maxRange = 8000, minAlt = 50, maxAlt = 10000, threat = "MEDIUM"},
+  
+  -- Generic fallback
+  ["UNKNOWN"] = {name = "Unknown SAM", maxRange = 30000, minAlt = 100, maxAlt = 50000, threat = "MEDIUM"}
+}
+
 --- Create new threat manager
 -- @param #BOMBER_THREAT_MANAGER self
 -- @param #BOMBER bomber The bomber instance
@@ -1551,12 +1610,27 @@ function BOMBER_THREAT_MANAGER:_ScanThreats()
           
           if distance <= self.SAMThreatRange then
             local threatId = group:GetName()
+            local typeName = unit:GetTypeName()
+            
+            -- Identify SAM type and get threat data
+            local samData = self:_IdentifySAM(typeName)
+            local bomberAltFeet = self.Bomber.Group:GetAltitude() * 3.28084 -- meters to feet
+            
+            -- Assess if this SAM can actually engage at current altitude and range
+            local canEngage = self:_CanSAMEngage(samData, distance, bomberAltFeet)
+            local effectiveThreat = self:_CalculateEffectiveThreat(samData, distance, bomberAltFeet)
+            
             threatsFound[threatId] = {
               Type = BOMBER_THREAT_MANAGER.ThreatType.SAM,
               Group = group,
               Distance = distance,
               Bearing = self:_GetBearing(bomberCoord, groupCoord),
-              Time = currentTime
+              Time = currentTime,
+              SAMType = samData.name,
+              SAMData = samData,
+              CanEngage = canEngage,
+              ThreatLevel = effectiveThreat,
+              BomberAlt = bomberAltFeet
             }
           end
         end
@@ -1639,6 +1713,117 @@ function BOMBER_THREAT_MANAGER:_UpdateThreats(newThreats)
   end
 end
 
+--- Identify SAM type from unit type name
+-- @param #BOMBER_THREAT_MANAGER self
+-- @param #string typeName Unit type name from DCS
+-- @return #table SAM data from database
+function BOMBER_THREAT_MANAGER:_IdentifySAM(typeName)
+  if not typeName then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["UNKNOWN"]
+  end
+  
+  local typeUpper = string.upper(typeName)
+  
+  -- Match against known SAM systems
+  for samKey, samData in pairs(BOMBER_THREAT_MANAGER.SAMDatabase) do
+    if samKey ~= "UNKNOWN" then
+      local keyUpper = string.upper(samKey)
+      -- Check for SAM designation in unit name
+      if string.find(typeUpper, keyUpper) or string.find(typeUpper, string.gsub(keyUpper, "-", "")) then
+        return samData
+      end
+    end
+  end
+  
+  -- Check for specific DCS unit names
+  if string.find(typeUpper, "S%-300") or string.find(typeUpper, "S300") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["SA-10"]
+  elseif string.find(typeUpper, "S%-400") or string.find(typeUpper, "S400") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["SA-20"]
+  elseif string.find(typeUpper, "BUK") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["SA-11"]
+  elseif string.find(typeUpper, "KUB") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["SA-6"]
+  elseif string.find(typeUpper, "TOR") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["SA-15"]
+  elseif string.find(typeUpper, "OSA") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["SA-8"]
+  elseif string.find(typeUpper, "TUNGUSKA") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["SA-19"]
+  elseif string.find(typeUpper, "HAWK") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["Hawk"]
+  elseif string.find(typeUpper, "PATRIOT") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["Patriot"]
+  elseif string.find(typeUpper, "ROLAND") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["Roland"]
+  elseif string.find(typeUpper, "RAPIER") then
+    return BOMBER_THREAT_MANAGER.SAMDatabase["Rapier"]
+  end
+  
+  return BOMBER_THREAT_MANAGER.SAMDatabase["UNKNOWN"]
+end
+
+--- Check if SAM can engage bomber at current range and altitude
+-- @param #BOMBER_THREAT_MANAGER self
+-- @param #table samData SAM data from database
+-- @param #number distance Distance to SAM in meters
+-- @param #number altitude Bomber altitude in feet
+-- @return #boolean True if SAM can engage
+function BOMBER_THREAT_MANAGER:_CanSAMEngage(samData, distance, altitude)
+  if not samData then return false end
+  
+  -- Check range
+  if distance > samData.maxRange then
+    return false
+  end
+  
+  -- Check altitude envelope
+  if altitude < samData.minAlt or altitude > samData.maxAlt then
+    return false
+  end
+  
+  return true
+end
+
+--- Calculate effective threat level considering range and altitude
+-- @param #BOMBER_THREAT_MANAGER self
+-- @param #table samData SAM data from database
+-- @param #number distance Distance to SAM in meters
+-- @param #number altitude Bomber altitude in feet
+-- @return #string Threat level: "CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE"
+function BOMBER_THREAT_MANAGER:_CalculateEffectiveThreat(samData, distance, altitude)
+  if not samData then return "NONE" end
+  
+  -- Not within engagement envelope
+  if not self:_CanSAMEngage(samData, distance, altitude) then
+    -- Close to envelope edges might still be concerning
+    if distance <= samData.maxRange * 1.1 then
+      return "LOW" -- Just outside range
+    end
+    return "NONE"
+  end
+  
+  -- Within envelope - assess based on range percentage and base threat
+  local rangePercent = distance / samData.maxRange
+  local baseThreat = samData.threat
+  
+  -- Optimal engagement range for SAMs is typically 30-70% of max range
+  if rangePercent < 0.3 then
+    -- Very close - highest threat
+    if baseThreat == "CRITICAL" then return "CRITICAL" end
+    if baseThreat == "HIGH" then return "CRITICAL" end
+    return "HIGH"
+  elseif rangePercent < 0.7 then
+    -- Optimal range - use base threat
+    return baseThreat
+  else
+    -- Near max range - reduced threat
+    if baseThreat == "CRITICAL" then return "HIGH" end
+    if baseThreat == "HIGH" then return "MEDIUM" end
+    return "LOW"
+  end
+end
+
 --- Get bearing from bomber to threat
 -- @param #BOMBER_THREAT_MANAGER self
 -- @param #COORDINATE fromCoord Bomber position
@@ -1681,6 +1866,341 @@ function BOMBER_THREAT_MANAGER:IsUnderThreat()
     end
   end
   return false
+end
+
+---
+-- BOMBER_SAM_AVOIDANCE_ROUTER - Dynamic SAM threat avoidance and corridor detection
+-- @type BOMBER_SAM_AVOIDANCE_ROUTER
+BOMBER_SAM_AVOIDANCE_ROUTER = {
+  ClassName = "BOMBER_SAM_AVOIDANCE_ROUTER"
+}
+
+--- Create new SAM avoidance router
+-- @param #BOMBER_SAM_AVOIDANCE_ROUTER self
+-- @param #BOMBER bomber The bomber instance
+-- @return #BOMBER_SAM_AVOIDANCE_ROUTER
+function BOMBER_SAM_AVOIDANCE_ROUTER:New(bomber)
+  local self = BASE:Inherit(self, BASE:New())
+  
+  self.Bomber = bomber
+  self.LastRouteCheck = 0
+  self.ActiveDetours = {}
+  self.RouteHistory = {}
+  
+  return self
+end
+
+--- Analyze route for SAM threats and find safe corridors
+-- @param #BOMBER_SAM_AVOIDANCE_ROUTER self
+-- @param #COORDINATE fromCoord Starting position
+-- @param #COORDINATE toCoord Destination
+-- @param #table samThreats Active SAM threats from threat manager
+-- @return #table Route analysis: {isSafe, threats, corridors, recommendation}
+function BOMBER_SAM_AVOIDANCE_ROUTER:AnalyzeRoute(fromCoord, toCoord, samThreats)
+  if not BOMBER_ESCORT_CONFIG.EnableSAMAvoidance then
+    return {isSafe = true, threats = {}, corridors = {}, recommendation = "SAM avoidance disabled"}
+  end
+  
+  local directDistance = fromCoord:Get2DDistance(toCoord)
+  local directHeading = fromCoord:HeadingTo(toCoord)
+  local bomberAlt = self.Bomber.Group:GetAltitude() * 3.28084 -- meters to feet
+  
+  -- Build threat zones from active SAMs
+  local threatZones = {}
+  local threatsOnRoute = {}
+  
+  for threatId, threat in pairs(samThreats) do
+    if threat.Type == BOMBER_THREAT_MANAGER.ThreatType.SAM then
+      -- Only consider SAMs that can engage at current altitude if configured
+      local shouldProcess = true
+      if BOMBER_ESCORT_CONFIG.SAMAvoidOnlyIfCanEngage and not threat.CanEngage then
+        -- Skip this SAM, it's harmless at our altitude
+        shouldProcess = false
+      end
+      
+      if shouldProcess then
+        local samCoord = threat.Group:GetCoordinate()
+        if samCoord then
+          local samData = threat.SAMData or BOMBER_THREAT_MANAGER.SAMDatabase["UNKNOWN"]
+          local threatRadius = samData.maxRange + BOMBER_ESCORT_CONFIG.SAMAvoidanceBuffer
+          
+          -- Check if this SAM threatens the direct route
+          local distanceToRoute = self:_PointToLineDistance(samCoord, fromCoord, toCoord)
+          
+          if distanceToRoute < threatRadius then
+            table.insert(threatsOnRoute, {
+              id = threatId,
+              coord = samCoord,
+              radius = threatRadius,
+              samType = threat.SAMType,
+              threatLevel = threat.ThreatLevel,
+              distanceToRoute = distanceToRoute,
+              threat = threat
+            })
+          end
+          
+          table.insert(threatZones, {
+            id = threatId,
+            coord = samCoord,
+            radius = threatRadius,
+            samType = threat.SAMType
+          })
+        end
+      end
+    end
+  end
+  
+  -- If no threats on direct route, we're clear
+  if #threatsOnRoute == 0 then
+    return {
+      isSafe = true,
+      threats = {},
+      corridors = {},
+      recommendation = "Direct route clear",
+      directDistance = directDistance
+    }
+  end
+  
+  -- Try to find corridors through the SAM field
+  local corridors = self:_FindCorridors(fromCoord, toCoord, threatZones)
+  
+  -- Evaluate best route option
+  local recommendation = self:_EvaluateRouteOptions(fromCoord, toCoord, directDistance, threatsOnRoute, corridors)
+  
+  return {
+    isSafe = (recommendation.action ~= "ABORT"),
+    threats = threatsOnRoute,
+    corridors = corridors,
+    recommendation = recommendation,
+    directDistance = directDistance
+  }
+end
+
+--- Find safe corridors between SAM threat zones
+-- @param #BOMBER_SAM_AVOIDANCE_ROUTER self
+-- @param #COORDINATE fromCoord Start
+-- @param #COORDINATE toCoord End
+-- @param #table threatZones Array of SAM threat zones
+-- @return #table Array of corridor options with waypoints
+function BOMBER_SAM_AVOIDANCE_ROUTER:_FindCorridors(fromCoord, toCoord, threatZones)
+  local corridors = {}
+  
+  if #threatZones == 0 then
+    return corridors
+  end
+  
+  -- Try different approach angles to find gaps
+  local directHeading = fromCoord:HeadingTo(toCoord)
+  local testAngles = {-45, -30, -15, 15, 30, 45, -60, 60, -90, 90} -- Degrees offset from direct
+  
+  for _, angleOffset in ipairs(testAngles) do
+    local testHeading = (directHeading + angleOffset) % 360
+    local corridor = self:_TestCorridorPath(fromCoord, toCoord, testHeading, threatZones)
+    
+    if corridor.isValid then
+      table.insert(corridors, corridor)
+    end
+  end
+  
+  -- Sort corridors by total distance (prefer shorter detours)
+  table.sort(corridors, function(a, b) return a.totalDistance < b.totalDistance end)
+  
+  return corridors
+end
+
+--- Test a specific corridor path through SAM field
+-- @param #BOMBER_SAM_AVOIDANCE_ROUTER self
+-- @param #COORDINATE fromCoord Start
+-- @param #COORDINATE toCoord End  
+-- @param #number heading Test heading in degrees
+-- @param #table threatZones SAM threat zones
+-- @return #table Corridor data {isValid, waypoints, totalDistance}
+function BOMBER_SAM_AVOIDANCE_ROUTER:_TestCorridorPath(fromCoord, toCoord, heading, threatZones)
+  local directDistance = fromCoord:Get2DDistance(toCoord)
+  local maxDetourDist = math.min(
+    directDistance * (BOMBER_ESCORT_CONFIG.SAMMaxDetourPercent / 100),
+    BOMBER_ESCORT_CONFIG.SAMMaxDetourAbsolute
+  )
+  
+  -- Project waypoint along test heading
+  local testDistance = directDistance * 0.7 -- Go 70% of the way on this heading
+  local waypointCoord = fromCoord:Translate(testDistance, heading)
+  
+  -- Check if waypoint avoids all threat zones
+  local safe = true
+  for _, zone in ipairs(threatZones) do
+    local distToZone = waypointCoord:Get2DDistance(zone.coord)
+    if distToZone < zone.radius then
+      safe = false
+      break
+    end
+  end
+  
+  if not safe then
+    return {isValid = false}
+  end
+  
+  -- Check if path from waypoint to target is clear
+  for _, zone in ipairs(threatZones) do
+    local distToRoute = self:_PointToLineDistance(zone.coord, waypointCoord, toCoord)
+    if distToRoute < zone.radius then
+      safe = false
+      break
+    end
+  end
+  
+  if not safe then
+    return {isValid = false}
+  end
+  
+  -- Calculate total distance
+  local leg1 = fromCoord:Get2DDistance(waypointCoord)
+  local leg2 = waypointCoord:Get2DDistance(toCoord)
+  local totalDistance = leg1 + leg2
+  
+  -- Check if detour is within acceptable limits
+  if (totalDistance - directDistance) > maxDetourDist then
+    return {isValid = false, reason = "Detour too long"}
+  end
+  
+  return {
+    isValid = true,
+    waypoints = {waypointCoord},
+    totalDistance = totalDistance,
+    detourDistance = totalDistance - directDistance,
+    heading = heading
+  }
+end
+
+--- Calculate distance from point to line segment
+-- @param #BOMBER_SAM_AVOIDANCE_ROUTER self
+-- @param #COORDINATE point Point coordinate
+-- @param #COORDINATE lineStart Line start
+-- @param #COORDINATE lineEnd Line end
+-- @return #number Distance in meters
+function BOMBER_SAM_AVOIDANCE_ROUTER:_PointToLineDistance(point, lineStart, lineEnd)
+  local px, py = point.x, point.z
+  local x1, y1 = lineStart.x, lineStart.z
+  local x2, y2 = lineEnd.x, lineEnd.z
+  
+  local dx = x2 - x1
+  local dy = y2 - y1
+  
+  if dx == 0 and dy == 0 then
+    -- Line is actually a point
+    return point:Get2DDistance(lineStart)
+  end
+  
+  -- Calculate the t parameter (projection of point onto line)
+  local t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+  
+  -- Clamp t to [0, 1] to stay on line segment
+  t = math.max(0, math.min(1, t))
+  
+  -- Find closest point on line
+  local closestX = x1 + t * dx
+  local closestY = y1 + t * dy
+  
+  -- Calculate distance
+  local dist = math.sqrt((px - closestX)^2 + (py - closestY)^2)
+  
+  return dist
+end
+
+--- Evaluate route options and recommend action
+-- @param #BOMBER_SAM_AVOIDANCE_ROUTER self
+-- @param #COORDINATE fromCoord Start
+-- @param #COORDINATE toCoord End
+-- @param #number directDistance Direct distance in meters
+-- @param #table threatsOnRoute SAMs threatening direct route
+-- @param #table corridors Available safe corridors
+-- @return #table Recommendation {action, route, message, distance}
+function BOMBER_SAM_AVOIDANCE_ROUTER:_EvaluateRouteOptions(fromCoord, toCoord, directDistance, threatsOnRoute, corridors)
+  
+  -- Check if we have viable corridors
+  if #corridors > 0 then
+    local bestCorridor = corridors[1] -- Already sorted by distance
+    
+    -- Check fuel viability
+    local fuelCheck = self:_CheckFuelViability(bestCorridor.totalDistance)
+    
+    if fuelCheck.viable then
+      return {
+        action = "REROUTE",
+        route = bestCorridor,
+        message = string.format("Rerouting through corridor (detour +%d km) to avoid %d SAM site%s",
+          math.floor(bestCorridor.detourDistance / 1000),
+          #threatsOnRoute,
+          #threatsOnRoute > 1 and "s" or ""),
+        distance = bestCorridor.totalDistance,
+        detour = bestCorridor.detourDistance,
+        fuelRemaining = fuelCheck.percentRemaining
+      }
+    else
+      return {
+        action = "ABORT",
+        route = nil,
+        message = string.format("Insufficient fuel for SAM avoidance (need %d%%, have %d%%) - RTB",
+          BOMBER_ESCORT_CONFIG.SAMFuelReservePercent,
+          math.floor(fuelCheck.percentRemaining)),
+        distance = 0,
+        reason = "FUEL"
+      }
+    end
+  end
+  
+  -- No safe corridors found
+  local maxDetour = BOMBER_ESCORT_CONFIG.SAMMaxDetourAbsolute
+  
+  -- Describe the SAM wall
+  local samTypes = {}
+  for _, threat in ipairs(threatsOnRoute) do
+    table.insert(samTypes, threat.samType)
+  end
+  
+  return {
+    action = "ABORT",
+    route = nil,
+    message = string.format("No safe corridor found through SAM field (%s) - RTB",
+      table.concat(samTypes, ", ")),
+    distance = 0,
+    reason = "SAM_WALL"
+  }
+end
+
+--- Check if bomber has enough fuel for detour
+-- @param #BOMBER_SAM_AVOIDANCE_ROUTER self
+-- @param #number plannedDistance Planned route distance in meters
+-- @return #table {viable, percentRemaining, reason}
+function BOMBER_SAM_AVOIDANCE_ROUTER:_CheckFuelViability(plannedDistance)
+  if not self.Bomber.Group or not self.Bomber.Group:IsAlive() then
+    return {viable = false, percentRemaining = 0, reason = "Group not alive"}
+  end
+  
+  local unit = self.Bomber.Group:GetUnit(1)
+  if not unit then
+    return {viable = false, percentRemaining = 0, reason = "No unit"}
+  end
+  
+  local fuelRemaining = unit:GetFuel() -- Returns 0.0 to 1.0
+  local percentRemaining = fuelRemaining * 100
+  
+  -- Need reserve plus percentage for detour
+  local requiredPercent = BOMBER_ESCORT_CONFIG.SAMFuelReservePercent
+  
+  if percentRemaining >= requiredPercent then
+    return {
+      viable = true,
+      percentRemaining = percentRemaining,
+      reason = "Sufficient fuel"
+    }
+  else
+    return {
+      viable = false,
+      percentRemaining = percentRemaining,
+      reason = string.format("Only %.0f%% fuel remaining, need %.0f%%", percentRemaining, requiredPercent)
+    }
+  end
 end
 
 ---
@@ -3253,6 +3773,23 @@ function BOMBER:Spawn()
   self.EscortMonitor = BOMBER_ESCORT_MONITOR:New(self)  -- Create but don't start
   self.ThreatManager = BOMBER_THREAT_MANAGER:New(self):Start()
   
+  -- Initialize SAM avoidance router
+  if BOMBER_ESCORT_CONFIG.EnableSAMAvoidance then
+    self.SAMRouter = BOMBER_SAM_AVOIDANCE_ROUTER:New(self)
+    BASE:I(string.format("%s: SAM avoidance router initialized", self.Callsign))
+  end
+  
+  -- Start SAM status summary scheduler (runs every 80 seconds)
+  local summaryInterval = BOMBER_ESCORT_CONFIG.SAMStatusSummaryInterval or 80
+  self.SAMStatusScheduler = SCHEDULER:New(nil, 
+    function()
+      if self and self:IsAlive() then
+        self:_UpdateSAMStatusSummary()
+      end
+    end, {}, 15, summaryInterval) -- First run after 15 seconds, then every 80 seconds
+  
+  BASE:I(string.format("%s: SAM status summary scheduled every %d seconds", self.Callsign, summaryInterval))
+  
   -- Initialize formation manager
   self.FormationManager = BOMBER_FORMATION:New(self)
   self.FormationManager:Apply()
@@ -4392,12 +4929,15 @@ function BOMBER:_MonitorWaypoints()
       BASE:I(string.format("%s: No bombing waypoint detected in route", self.Callsign))
     end
     
-    -- Only egress after weapons are actually released - allow unlimited passes
-    if self.WeaponsReleased and self.BombingWaypointIndex and 
+    -- Only egress after weapons are actually released AND sufficient time has passed for bomb drop to complete
+    -- Require at least 15 seconds after first weapon release to allow full ordnance employment
+    if self.WeaponsReleased and self.WeaponsReleaseStartTime and 
+       (timer.getTime() - self.WeaponsReleaseStartTime) >= 15 and
+       self.BombingWaypointIndex and 
        self.CurrentWaypointIndex >= self.BombingWaypointIndex + 2 and 
        self:Is(BOMBER.States.ATTACKING) then
-      BASE:I(string.format("%s: Weapons released and past bombing area (current: %d, bombing was: %d) - transitioning to EGRESSING", 
-        self.Callsign, self.CurrentWaypointIndex, self.BombingWaypointIndex))
+      BASE:I(string.format("%s: Weapons released %.0fs ago and past bombing area (current: %d, bombing was: %d) - transitioning to EGRESSING", 
+        self.Callsign, timer.getTime() - self.WeaponsReleaseStartTime, self.CurrentWaypointIndex, self.BombingWaypointIndex))
       self:__BombsAway(0)
     end
     
@@ -4455,11 +4995,12 @@ function BOMBER:_SetupEventHandlers()
       -- Only announce first weapon release during attack
       if self:Is(BOMBER.States.ATTACKING) and not self.WeaponsReleased then
         self.WeaponsReleased = true
+        self.WeaponsReleaseStartTime = timer.getTime() -- Track when bombs started dropping
         
         -- Use crew awareness callout
         self:_CrewAwarenessCallout("weapons_release")
         
-        BASE:I(string.format("%s: SHOT event detected - weapons released", self.Callsign))
+        BASE:I(string.format("%s: SHOT event detected - weapons release started", self.Callsign))
       end
     end
   end)
@@ -5622,28 +6163,336 @@ function BOMBER:OnThreatDetected(threatData)
     -- Use contextual crew callout
     self:_CrewAwarenessCallout("threat_sam")
     
-    if threatData.Distance < 40000 then -- Inside SAM max range
-      local severity = threatData.Distance < 20000 and "HIGH" or "MEDIUM"
-      BASE:I(string.format("%s: SAM threat analysis - Distance=%d m, Severity=%s", 
-        self.Callsign, math.floor(threatData.Distance), severity))
-      
-      if threatData.Distance < 20000 then -- Inside SAM engagement range
-        BASE:I(string.format("%s: DECISION - Deploy countermeasures (inside SAM range)", self.Callsign))
-        self:_BroadcastMessage(string.format("%s: [!] SAM SITE TRACKING! Distance %d nm - deploying chaff!", 
-          self.Callsign, distanceNm))
-      else
-        BASE:I(string.format("%s: DECISION - Monitor SAM threat (outside engagement range)", self.Callsign))
-        self:_BroadcastMessage(string.format("%s: SAM site detected %d nm out. Monitoring...", 
-          self.Callsign, distanceNm))
+    -- Progressive range-based warnings
+    self:_ProcessSAMRangeWarning(threatData)
+    
+    -- Check if we need to reroute around this SAM
+    if BOMBER_ESCORT_CONFIG.EnableSAMAvoidance and self.SAMRouter then
+      self:_CheckSAMReroute()
+    end
+    
+    -- Auto-deploy countermeasures when close
+    if threatData.Distance < (BOMBER_ESCORT_CONFIG.SAMAutoCountermeasureRange or 30000) then
+      if not self.SAMCountermeasuresActive then
+        self.SAMCountermeasuresActive = true
+        BASE:I(string.format("%s: Auto-deploying countermeasures (SAM within %d km)", 
+          self.Callsign, math.floor(threatData.Distance / 1000)))
       end
     end
   end
+end
+
+--- Process progressive SAM range warnings
+-- @param #BOMBER self
+-- @param #table threatData SAM threat information
+function BOMBER:_ProcessSAMRangeWarning(threatData)
+  local distance = threatData.Distance
+  local distanceNm = math.floor(distance / 1852)
+  local bearing = math.floor(threatData.Bearing)
+  local threatId = threatData.Group:GetName()
+  local samType = threatData.SAMType or "Unknown SAM"
+  local threatLevel = threatData.ThreatLevel or "MEDIUM"
+  local canEngage = threatData.CanEngage
+  local bomberAlt = threatData.BomberAlt or 0
+  
+  -- Initialize SAM warning tracking
+  if not self.SAMWarningRanges then
+    self.SAMWarningRanges = {}
+  end
+  
+  if not self.SAMWarningRanges[threatId] then
+    self.SAMWarningRanges[threatId] = {}
+  end
+  
+  -- Check each warning threshold (50km, 40km, 30km, 20km)
+  local thresholds = BOMBER_ESCORT_CONFIG.SAMProgressiveWarnings or {50000, 40000, 30000, 20000}
+  
+  for _, threshold in ipairs(thresholds) do
+    if distance <= threshold and not self.SAMWarningRanges[threatId][threshold] then
+      -- New threshold crossed - issue warning
+      self.SAMWarningRanges[threatId][threshold] = true
+      
+      local severity = ""
+      local message = ""
+      local engageStatus = canEngage and "CAN ENGAGE" or "outside envelope"
+      
+      if threshold >= 50000 then
+        severity = "DETECTED"
+        message = string.format("%s: [SAM] %s - %s bearing %03d°, %d nm", 
+          self.Callsign, samType, severity, bearing, distanceNm)
+      elseif threshold >= 40000 then
+        severity = threatLevel
+        if canEngage then
+          message = string.format("%s: [SAM] %s (%s threat) bearing %03d°, %d nm - %s at %.0fft!", 
+            self.Callsign, samType, severity, bearing, distanceNm, engageStatus, bomberAlt)
+        else
+          message = string.format("%s: [SAM] %s bearing %03d°, %d nm - %s", 
+            self.Callsign, samType, bearing, distanceNm, engageStatus)
+        end
+      elseif threshold >= 30000 then
+        if canEngage then
+          message = string.format("%s: [SAM] %s (%s) bearing %03d°, %d nm - DANGER ZONE! Deploying countermeasures!", 
+            self.Callsign, samType, threatLevel, bearing, distanceNm)
+        else
+          message = string.format("%s: [SAM] %s bearing %03d°, %d nm - close but %s at %.0fft", 
+            self.Callsign, samType, bearing, distanceNm, engageStatus, bomberAlt)
+        end
+      else -- 20km or less
+        if canEngage then
+          message = string.format("%s: [!] %s (%s THREAT!) bearing %03d°, %d nm - TRACKING!", 
+            self.Callsign, samType, threatLevel, bearing, distanceNm)
+        else
+          message = string.format("%s: %s bearing %03d°, %d nm - %s at %.0fft", 
+            self.Callsign, samType, bearing, distanceNm, engageStatus, bomberAlt)
+        end
+      end
+      
+      self:_BroadcastMessage(message)
+      BASE:I(string.format("%s: SAM progressive warning - %s (%s/%s) at %d m, can engage: %s", 
+        self.Callsign, samType, threatLevel, engageStatus, math.floor(distance), tostring(canEngage)))
+      
+      -- Only warn once per threshold
+      break
+    end
+  end
+end
+
+--- Update SAM status summary (called periodically)
+-- @param #BOMBER self
+function BOMBER:_UpdateSAMStatusSummary()
+  if not self.ThreatManager then return end
+  
+  local samThreats = self.ThreatManager:GetActiveThreats(BOMBER_THREAT_MANAGER.ThreatType.SAM)
+  local threatCount = 0
+  for _ in pairs(samThreats) do
+    threatCount = threatCount + 1
+  end
+  
+  if threatCount == 0 then
+    -- Clear countermeasures flag when no threats
+    self.SAMCountermeasuresActive = false
+    return
+  end
+  
+  -- Find closest and most dangerous threats
+  local closest = nil
+  local closestDist = math.huge
+  local mostDangerous = nil
+  local highestThreat = 0
+  
+  -- Threat level to numeric value for comparison
+  local threatValues = {CRITICAL = 4, HIGH = 3, MEDIUM = 2, LOW = 1, NONE = 0}
+  
+  for _, threat in pairs(samThreats) do
+    if threat.Distance < closestDist then
+      closestDist = threat.Distance
+      closest = threat
+    end
+    
+    -- Track most dangerous based on threat level and engagement capability
+    local threatValue = threatValues[threat.ThreatLevel] or 0
+    if threat.CanEngage then
+      threatValue = threatValue + 1 -- Boost priority if can actually engage
+    end
+    
+    if threatValue > highestThreat then
+      highestThreat = threatValue
+      mostDangerous = threat
+    end
+  end
+  
+  -- Build status message prioritizing actual threats
+  local primaryThreat = mostDangerous or closest
+  
+  if threatCount == 1 and primaryThreat then
+    local distanceNm = math.floor(primaryThreat.Distance / 1852)
+    local bearing = math.floor(primaryThreat.Bearing)
+    local samType = primaryThreat.SAMType or "Unknown SAM"
+    local threatLevel = primaryThreat.ThreatLevel or "MEDIUM"
+    local canEngage = primaryThreat.CanEngage
+    local bomberAlt = primaryThreat.BomberAlt or 0
+    
+    if canEngage then
+      self:_BroadcastMessage(string.format("%s: [SAM STATUS] %s (%s) - %03d° @ %d nm - CAN ENGAGE at %.0fft", 
+        self.Callsign, samType, threatLevel, bearing, distanceNm, bomberAlt))
+    else
+      self:_BroadcastMessage(string.format("%s: [SAM STATUS] %s - %03d° @ %d nm (safe at %.0fft)", 
+        self.Callsign, samType, bearing, distanceNm, bomberAlt))
+    end
+  elseif threatCount > 1 and primaryThreat then
+    local closestNm = math.floor(closestDist / 1852)
+    local closestBearing = math.floor(closest.Bearing)
+    local primaryType = primaryThreat.SAMType or "Unknown"
+    local canEngage = primaryThreat.CanEngage
+    
+    -- Count how many can actually engage
+    local engageCount = 0
+    for _, threat in pairs(samThreats) do
+      if threat.CanEngage then
+        engageCount = engageCount + 1
+      end
+    end
+    
+    if engageCount > 0 then
+      self:_BroadcastMessage(string.format("%s: [SAM STATUS] %d sites (%d CAN ENGAGE) - Priority: %s @ %03d°", 
+        self.Callsign, threatCount, engageCount, primaryType, closestBearing))
+    else
+      self:_BroadcastMessage(string.format("%s: [SAM STATUS] %d sites detected - closest: %03d° @ %d nm (all outside envelope)", 
+        self.Callsign, threatCount, closestBearing, closestNm))
+    end
+  end
+end
+
+--- Check if SAM reroute is needed and execute if necessary
+-- @param #BOMBER self
+function BOMBER:_CheckSAMReroute()
+  if not self.SAMRouter or not self.ThreatManager then
+    return
+  end
+  
+  -- Don't reroute if already RTB or aborting
+  if self:Is(BOMBER.States.RTB) or self:Is(BOMBER.States.ABORTING) then
+    return
+  end
+  
+  -- Throttle checks to avoid excessive recalculation
+  local currentTime = timer.getTime()
+  local checkInterval = BOMBER_ESCORT_CONFIG.SAMRerouteCheckInterval or 15
+  if (currentTime - (self.SAMRouter.LastRouteCheck or 0)) < checkInterval then
+    return
+  end
+  self.SAMRouter.LastRouteCheck = currentTime
+  
+  -- Get current position and next target
+  if not self.Group or not self.Group:IsAlive() then
+    return
+  end
+  
+  local currentCoord = self.Group:GetCoordinate()
+  if not currentCoord then
+    return
+  end
+  
+  -- Determine target coordinate based on current state
+  local targetCoord = nil
+  
+  if self:Is(BOMBER.States.FLYING) then
+    -- En route to target - check path to target
+    if self.TargetCoord then
+      targetCoord = self.TargetCoord
+    end
+  elseif self:Is(BOMBER.States.ATTACKING) then
+    -- Already attacking, let it complete
+    return
+  end
+  
+  if not targetCoord then
+    -- No target to route to
+    return
+  end
+  
+  -- Get active SAM threats
+  local samThreats = self.ThreatManager:GetActiveThreats(BOMBER_THREAT_MANAGER.ThreatType.SAM)
+  
+  if not samThreats or not next(samThreats) then
+    -- No SAM threats, clear route
+    return
+  end
+  
+  -- Analyze route for SAM threats
+  local analysis = self.SAMRouter:AnalyzeRoute(currentCoord, targetCoord, samThreats)
+  
+  BASE:I(string.format("%s: Route analysis - Safe: %s, Threats on route: %d, Corridors found: %d", 
+    self.Callsign, tostring(analysis.isSafe), #analysis.threats, #analysis.corridors))
+  
+  if analysis.isSafe and #analysis.threats == 0 then
+    -- Current route is safe
+    return
+  end
+  
+  -- Route is threatened - evaluate recommendation
+  local rec = analysis.recommendation
+  
+  if rec.action == "REROUTE" then
+    -- Apply the new route
+    BASE:I(string.format("%s: Applying SAM avoidance reroute - %s", self.Callsign, rec.message))
+    self:_BroadcastMessage(string.format("%s: [REROUTE] %s", self.Callsign, rec.message))
+    
+    -- Apply the detour route
+    self:_ApplySAMDetourRoute(rec.route, targetCoord)
+    
+  elseif rec.action == "ABORT" then
+    -- Must abort mission
+    BASE:I(string.format("%s: SAM avoidance abort required - %s", self.Callsign, rec.message))
+    self:_BroadcastMessage(string.format("%s: [ABORT] %s", self.Callsign, rec.message))
+    
+    -- Abort the mission
+    self:__Abort(2)
+  end
+end
+
+--- Apply SAM detour route to current flight plan
+-- @param #BOMBER self
+-- @param #table corridor Corridor data with waypoints
+-- @param #COORDINATE finalTarget Final target coordinate
+function BOMBER:_ApplySAMDetourRoute(corridor, finalTarget)
+  if not corridor or not corridor.waypoints or #corridor.waypoints == 0 then
+    BASE:E(string.format("%s: Invalid corridor data for reroute", self.Callsign))
+    return
+  end
+  
+  if not self.Group or not self.Group:IsAlive() then
+    return
+  end
+  
+  -- Build new route with detour waypoints
+  local cruiseAlt = self.Profile.CruiseAlt
+  local cruiseSpeed = self.Profile.CruiseSpeed
+  local cruiseAltMeters = cruiseAlt * 0.3048
+  local cruiseSpeedMPS = cruiseSpeed * 0.514444
+  
+  local waypoints = {}
+  
+  -- Add current position as waypoint 1
+  local currentCoord = self.Group:GetCoordinate()
+  table.insert(waypoints, currentCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+  
+  -- Add corridor waypoints
+  for _, wpCoord in ipairs(corridor.waypoints) do
+    local coord = wpCoord:SetAltitude(cruiseAltMeters)
+    table.insert(waypoints, coord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+  end
+  
+  -- Add final target
+  local targetWP = finalTarget:SetAltitude(cruiseAltMeters):WaypointAirTurningPoint(nil, cruiseSpeedMPS)
+  table.insert(waypoints, targetWP)
+  
+  -- Apply the new route
+  self.Group:Route(waypoints)
+  
+  BASE:I(string.format("%s: Applied detour route with %d waypoints", self.Callsign, #waypoints))
+  
+  -- Track that we've rerouted
+  table.insert(self.SAMRouter.RouteHistory, {
+    time = timer.getTime(),
+    reason = "SAM avoidance",
+    detour = corridor.detourDistance,
+    waypoints = #waypoints
+  })
 end
 
 --- Threat cleared event
 -- @param #BOMBER self
 -- @param #table threatData Threat information
 function BOMBER:OnThreatCleared(threatData)
+  -- Clear SAM warning ranges for this specific threat
+  if threatData.Type == BOMBER_THREAT_MANAGER.ThreatType.SAM then
+    local threatId = threatData.Group:GetName()
+    if self.SAMWarningRanges and self.SAMWarningRanges[threatId] then
+      self.SAMWarningRanges[threatId] = nil
+    end
+  end
+  
   BASE:I(string.format("%s: Threat cleared - %s", self.Callsign, threatData.Type))
   
   -- Check if any threats remain
@@ -6091,6 +6940,7 @@ function BOMBER:onenterAttacking()
   
   -- Reset attack tracking flags for this run
   self.WeaponsReleased = false
+  self.WeaponsReleaseStartTime = nil
   self.ImpactAnnounced = false
   self.IPRunCount = 0
   self.LastIPRunTime = timer.getTime()
@@ -6128,7 +6978,7 @@ function BOMBER:onenterAttacking()
         self.LastIPRunTime = currentTime
         
         local ipMessages = {
-            "%s: First pass complete - setting up attack geometry for weapon release.",
+            "%s: First pass complete - setting up attack geometry for weapon release, we're still in it..",
             "%s: Initial pass complete - calculating bombing solution for second pass.",
             "%s: Repositioning for attack run - weapon release on next pass.",
             "%s: Attack geometry being refined - release pass inbound.",
