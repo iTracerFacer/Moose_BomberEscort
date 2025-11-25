@@ -1060,8 +1060,8 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
   local escortRequired = self.Bomber.Profile.EscortRequired
   
   if not escortRequired then
-    BASE:I(string.format("%s: Escort not required for this bomber type - operating independently", self.Bomber.Callsign))
-    return  -- Skip escort status checks if not required
+    BASE:I(string.format("%s: Escort not required for this bomber type - operating independently (escorts still recognized and appreciated)", self.Bomber.Callsign))
+    return  -- Skip escort requirement/abort checks - but escorts are still tracked and acknowledged above
   end
   
   -- Update escort status (only if escort is required)
@@ -4305,6 +4305,16 @@ function BOMBER:_MonitorWaypoints()
   
   -- Schedule waypoint checks
   self.WaypointMonitor = SCHEDULER:New(nil, function()
+    -- Early exit if group or unit no longer exists
+    if not self.Group or not self.Group:IsAlive() then
+      BASE:I(string.format("%s: Group no longer alive - stopping waypoint monitor", self.Callsign))
+      if self.WaypointMonitor then
+        self.WaypointMonitor:Stop()
+        self.WaypointMonitor = nil
+      end
+      return
+    end
+    
     BASE:I(string.format("%s: Waypoint monitor cycle - checking position and state", self.Callsign))
     
     if not self:IsAlive() then
@@ -4357,8 +4367,12 @@ function BOMBER:_MonitorWaypoints()
         local bombCoord = COORDINATE:New(bombWP.x, bombWP.alt or 0, bombWP.y)
         local distToBomb = currentPos:Get2DDistance(bombCoord)
         
-        BASE:I(string.format("%s: Distance to bombing waypoint: %.1f km (State: %s)", 
-          self.Callsign, distToBomb/1000, self:GetState()))
+        -- Only log distance during relevant states
+        local currentState = self:GetState()
+        if currentState == "PreAttack" or currentState == "Attacking" then
+          BASE:I(string.format("%s: Distance to bombing waypoint: %.1f km (State: %s)", 
+            self.Callsign, distToBomb/1000, currentState))
+        end
         
         -- CRUISE -> PRE_ATTACK when within 50km of target
         if self:Is(BOMBER.States.CRUISE) and distToBomb < 50000 then
@@ -6108,143 +6122,98 @@ function BOMBER:onenterAttacking()
       local currentTime = timer.getTime()
       local timeSinceLastAnnounce = currentTime - self.LastIPRunTime
       
-      -- Announce IP run status every 20 seconds
-      if timeSinceLastAnnounce >= 30 then
+      -- Announce IP run status every 45 seconds
+      if timeSinceLastAnnounce >= 45 then
         self.IPRunCount = self.IPRunCount + 1
         self.LastIPRunTime = currentTime
         
         local ipMessages = {
-            "%s: Setting up attack geometry - adjusting for wind and speed.",
-            "%s: We are not aligned with target. Coming around for another pass.",
-            "%s: Calculating bombing solution - need proper attack angle.",
-            "%s: Target acquired, but geometry not ideal. Setting up for better approach.",
-            "%s: Bombardier needs better alignment - repositioning for attack run.",
-            "%s: Lining up the shot — but this isn’t the trench run yet. Repositioning.",
-            "%s: Approach unstable — Maverick would not approve. Coming around again.",
-            "%s: Geometry’s off — feels like trying to bullseye womp rats. Resetting.",
-            "%s: Angle too shallow — even the Nostromo’s auto-nav would complain. Re-engaging.",
-            "%s: Not enough stability — this isn't a Death Star moment. Making another pass.",
-            "%s: Attack vector drifting — and we’re not exactly flying with Goose today. Resetting.",
-            "%s: Alignment poor — feels like pulling a Rogue One move. Circling back.",
-            "%s: Speed profile off — as Morpheus would say, 'There is a difference between knowing the path and flying it.' Trying again.",
-            "%s: Approach compromised — this isn't a 'ride of the Valkyries' entrance. Re-setting.",
-            "%s: Bombing solution failing — even HAL would say this is suboptimal. Adjusting.",
-            "%s: Visual unstable — not quite a Top Gun moment yet. Repositioning.",
-            "%s: Attack run aborted — channeling my inner Porkins here. Looping back.",
-            "%s: Need a steadier run — the Force is not with this approach. Resetting.",
-            "%s: Overflew the mark — not my smoothest Millennium Falcon maneuver. Trying again.",
-            "%s: Wind pushed me off — and unfortunately, I’m no Airwolf. Coming around.",
-            "%s: Ooof, that's not looking good — even the A-Team would call this one off. Adjusting..",
-            "%s: Attack path degraded — even R2-D2 would be beeping angrily right now.",
-            "%s: Overshot the vector — this feels like landing the Bebop in a crosswind. Resetting.",
-            "%s: Not enough pitch authority — this is no Serenity-class performance. Re-approaching.",
-            "%s: Geometry unstable — even a Cylons’ guidance system would complain. Looping back.",
-            "%s: Sideslip too high — feels like piloting the Red Dwarf on manual. Trying again.",
-            "%s: Angle misaligned — I’m flying like a Ferengi after too much synthehol. Resetting.",
-            "%s: Too much drift — this isn't a Battlestar Viper moment. Circling around.",
-            "%s: Bombing run unstable — Gandalf would tell me to fly, you fools. Resetting.",
-            "%s: Nose not steady — even Buzz Lightyear wouldn’t call this flying. Re-engaging.",
-            "%s: Overshoot detected — this is more Spaceballs than Top Gun. Trying again.",
-            "%s: Roll angle off — as the Doctor would say, 'Wrong lever!' Resetting.",
-            "%s: Target crossing angle too fast — I’m no Mandalorian. Coming back around.",
-            "%s: Vector error — my inner pilot is crying. Repositioning.",
-            "%s: Missed the window — not exactly a Rebel-worthy attack. Setting up again.",
-            "%s: Pitch oscillation excessive — I swear the ship is laughing at me. Resetting.",
-            "%s: Too much turbulence — this feels like flying through Moria. Trying again.",
-            "%s: Lateral deviation large — even the Normandy wouldn’t approve. Looping.",
-            "%s: Timing off — this maneuver belongs in a blooper reel. Resetting.",
-            "%s: Approach blown — I flew that like a Klingon after shore leave. Reapproaching.",
-            "%s: Bank angle unstable — no way Starfleet would pass this. Going around.",
-            "%s: Crosswind correction poor — the Enterprise would’ve done it smoother. Resetting.",
-            "%s: Target lock dropped — even the Predator would give up on this angle. Trying again.",
-            "%s: Glidepath wrong — this is more Wallace & Gromit than Ace Combat. Circling.",
-            "%s: Vector drift — I’ve officially disappointed every flight instructor ever. Retrying.",
-            "%s: Speed mismatch — even the Flash couldn’t sync with this approach. Resetting.",
-            "%s: Approach looks like a bad holo-sim demo. Coming around again.",
-            "%s: Yaw authority insufficient — this feels like flying through molasses. Re-engaging.",
-            "%s: Not aligned — even a Stormtrooper would hit more accurately. Looping back.",
-            "%s: Climb rate off — I’m basically flapping wings at this point. Resetting.",
-            "%s: Overshoot imminent — channeling full Mr. Bean piloting energy. Trying again.",
-            "%s: Banked too early — this is no podracing moment. Circling.",
-            "%s: Turn radius too wide — this ship handles like a shopping cart. Resetting.",
-            "%s: Target slipped by — feels like chasing Road Runner. Coming back.",
-            "%s: Flight path chaos — looks like I trained at Loyola of Bad Aviation. Retrying.",
-            "%s: Stall margins too tight — even Tailspin would reject this. Resetting.",
-            "%s: Descent angle wrong — this is not the chosen approach. Trying again.",
-            "%s: Visual alignment lost — I blinked at the worst moment. Repositioning.",
-            "%s: Attack run wobbly — like steering a hoverboard on sand. Looping.",
-            "%s: Roll mismatch — that was a barrel roll I did *not* intend. Re-engaging.",
-            "%s: Off by a parsec — Han shot first, but I definitely flew wrong. Resetting.",
-            "%s: Nose drift high — looks like I’m avoiding imaginary asteroids. Coming back.",
-            "%s: Wrong altitude — even the Jetsons would complain. Trying again.",
-            "%s: Speed too low — I’m basically gliding on a hope and a prayer. Resetting.",
-            "%s: Vector collapse — someone fire my imaginary copilot. Re-approaching.",
-            "%s: Overshot — I flew that like a TIE fighter without brakes. Circling.",
-            "%s: Lined up with the wrong thing — that’s… not the target. Resetting.",
-            "%s: Rough approach — this belongs in a disaster movie. Looping again.",
-            "%s: Lateral error high — apparently I'm allergic to straight lines. Trying again.",
-            "%s: Pitch too aggressive — I nearly launched into orbit. Resetting.",
-            "%s: Lost the ideal angle — should’ve installed autopilot 2.0. Re-engaging.",
-            "%s: Drift over the mark — I drive cars straighter than this. Looping.",
-            "%s: Aim wobbly — like trying to thread a needle in turbulence. Resetting.",
-            "%s: Geometry falling apart — this resembles abstract art now. Trying again.",
-            "%s: Flight path looks drunk — and I haven’t had anything. Reapproach.",
-            "%s: Energy state bad — even the X-Wing simulator would laugh. Resetting.",
-            "%s: Came in too hot — cooking the approach like a microwave. Looping back.",
-            "%s: Target passed — I waved as I went by. Trying again.",
-            "%s: Approach devolved — full cartoon physics moment. Resetting.",
-            "%s: Too much bank — nearly did a corkscrew unintentionally. Coming back.",
-            "%s: Descent unstable — flying like a penguin with ambition. Re-engaging.",
-            "%s: Roll correction failed — this isn’t Star Fox. Resetting.",
-            "%s: Auto-trim confused — and honestly so am I. Trying again.",
-            "%s: Vector unsound — I may need adult supervision. Resetting.",
-            "%s: Alignment drifting — this is a proud moment for chaos. Looping.",
-            "%s: Target geometry collapsed — architecturally disappointing. Re-approach.",
-            "%s: Overbanked — apparently I thought I was in a different dimension. Retrying.",
-            "%s: Approach denied — even the ship said 'nope.' Resetting.",
-            "%s: Speed too erratic — felt like piloting a runaway shopping cart. Looping.",
-            "%s: Nearly aligned — but then fate intervened. Coming back.",
-            "%s: Lateral overshoot — like bowling but in the gutter. Resetting.",
-            "%s: Pitch jittery — this is a caffeinated flight path. Trying again.",
-            "%s: Nose wandered — I swear it has a mind of its own. Re-engaging.",
-            "%s: Course deviation massive — feels like GPS lost signal. Resetting.",
-            "%s: Attack vector too spicy — need mild. Looping back.",
-            "%s: Drift beyond tolerance — even autopilot quit. Trying again.",
-            "%s: Overflew target — this isn't a scenic tour. Resetting.",
-            "%s: Turn too early — premature maneuvering syndrome. Re-approach.",
-            "%s: Path crossed wrong — I drew a spaghetti line. Trying again.",
-            "%s: Target alignment evaporated — like my confidence. Resetting.",
-            "%s: Too much turbulence — might as well be in a blender. Looping.",
-            "%s: Nose dipped unexpectedly — rude. Re-engaging.",
-            "%s: Cross-track error high — wandering like a bored Roomba. Trying again.",
-            "%s: Approach sloppy — I’ve disappointed the ancestors. Resetting.",
-            "%s: Glidepath ruined — I sneezed. Coming back around.",
-            "%s: Roll drift — this is interpretive dance flying now. Looping.",
-            "%s: Attack run messy — straight lines are a myth. Resetting.",
-            "%s: Came in sideways — cool in movies, bad here. Re-approach.",
-            "%s: Missed entirely — I couldn’t hit a planet at this rate. Trying again.",
-            "%s: Vector ugly — aesthetically offensive. Resetting.",
-            "%s: Wrong speed — I’m either a sloth or lightning. Looping back.",
-            "%s: Geometry corrupted — must’ve caught a virus. Re-engaging.",
-            "%s: Path diverged — like a badly written timeline. Trying again.",
-            "%s: Alignment terrible — even my shadow would judge me. Resetting.",
-            "%s: Config wrong — who touched my buttons? Coming back.",
-            "%s: Hit turbulence — felt like riding a dragon mid-sneeze. Looping.",
-            "%s: Direction off — my compass has trust issues. Re-engage.",
-            "%s: Stability zero — chaos is my copilot today. Resetting.",
-            "%s: Approach denied by physics — rude. Trying again.",
-            "%s: Overshoot extreme — I basically visited next week. Looping.",
-            "%s: Target re-lost — like keys in a couch. Resetting.",
-            "%s: Need a better angle — or a miracle. Re-approach.",
-            "%s: Too much yaw — drifting like an anime car. Trying again.",
-            "%s: Missed angle — this flight path is improv theater. Resetting."
-
-            
+            "%s: First pass complete - setting up attack geometry for weapon release.",
+            "%s: Initial pass complete - calculating bombing solution for second pass.",
+            "%s: Repositioning for attack run - weapon release on next pass.",
+            "%s: Attack geometry being refined - release pass inbound.",
+            "%s: First pass complete - adjusting approach parameters for weapons employment.",
+            "%s: Bombardier refining solution - second pass will be hot.",
+            "%s: Repositioning for optimal release parameters - standby.",
+            "%s: Attack run setup in progress - weapon release next pass.",
+            "%s: Calculating final bombing solution - release pass momentarily.",
+            "%s: First pass complete - aligning for precision weapon employment.",
+            "%s: Adjusting attack geometry - second pass will be weapons hot.",
+            "%s: Bombardier calculating release parameters - coming around.",
+            "%s: Initial approach complete - setting up for weapon release.",
+            "%s: Refining attack solution - hot pass inbound.",
+            "%s: First pass complete - optimizing release geometry for next pass.",
+            "%s: Repositioning for weapons employment - release on next pass.",
+            "%s: Attack parameters being calculated - standby for weapon release on next pass.",
+            "%s: Setup pass complete - bombardier has the solution for next pass.",
+            "%s: Coming around for release pass - attack geometry confirmed.",
+            "%s: Calculating wind and speed corrections - weapon release next pass.",
+            "%s: First pass complete - aligning for accurate weapon employment.",
+            "%s: Bombardier refining parameters - hot pass momentarily.",
+            "%s: Attack solution being finalized - release pass inbound.",
+            "%s: Repositioning for optimal bombing geometry - standby.",
+            "%s: Setup pass complete - second pass will be weapons release.",
+            "%s: Adjusting for wind and target motion - release pass coming up.",
+            "%s: Initial geometry established - fine-tuning for weapon employment.",
+            "%s: Bombardier calculating final solution - hot pass inbound.",
+            "%s: First pass complete - setting up precision release parameters.",
+            "%s: Coming around for weapons employment - attack geometry set.",
+            "%s: Refining bombing solution - release on second pass.",
+            "%s: Setup complete - repositioning for weapon release.",
+            "%s: Attack parameters confirmed - hot pass momentarily.",
+            "%s: First pass complete - calculating optimal release point.",
+            "%s: Bombardier has preliminary solution - refining for next pass.",
+            "%s: Repositioning for weapon employment - standby for release.",
+            "%s: Attack geometry being optimized - second pass will be hot.",
+            "%s: Setup pass complete - aligning for precision bombing.",
+            "%s: Calculating release parameters - weapon employment next pass.",
+            "%s: First pass complete - coming around for weapons hot.",
+            "%s: Bombardier refining attack solution - release pass inbound.",
+            "%s: Initial approach complete - setting up for accurate employment.",
+            "%s: Adjusting bombing geometry - hot pass momentarily.",
+            "%s: Setup complete - weapon release on next pass.",
+            "%s: Coming around for precision attack - release parameters set.",
+            "%s: First pass complete - bombardier finalizing solution.",
+            "%s: Repositioning for optimal weapon employment - standby.",
+            "%s: Attack geometry confirmed - hot pass inbound.",
+            "%s: Calculating final release parameters - second pass ready.",
+            "%s: Too much drift — this isn't a Battlestar Viper moment. This next pass will be the magic moment!",
+            "%s: Bombardier has the target solution - weapon release next pass.",
+            "%s: Enabling attack computers... this next pass will be the one!",
+            "%s: Setup pass complete - weapons employment next approach.",
+            "%s: Setup pass done - coming around for weapon release. Even Mo could navigate this one.",
+            "%s: First pass complete - calculating release parameters for next pass. Unlike Mo, we'll actually hit something.",
+            "%s: Repositioning for attack run - second pass will be hot. Mo would've gotten lost by now.",
+            "%s: Attack geometry being refined - weapon release on next pass. Mo's still trying to find the target on his map.",
+            "%s: Initial pass complete - setting up for weapons employment. If Mo can't hit it in his F-4, at least we can.",
+            "%s: Bombardier calculating solution - hot pass inbound. Mo's probably still looking at the wrong waypoint.",
+            "%s: Coming around for release pass - next pass drops ordnance. Mo's navigation skills not required here.",
+            "%s: Setup complete - weapon release next pass. Even with Mo's aim, you can't miss from a bomber.",
+            "%s: First pass complete - refining attack geometry for second pass. Mo would've bombed the wrong coordinates.",
+            "%s: Repositioning for precision attack - release on next pass. Mo's F-4 is probably out of gas by now anyway.",
+            "%s: Setup pass complete - calculating for weapon release next pass. Taking our time, unlike Mo Jenkins.",
+            "%s: First pass done - coming around for hot pass. No need to Jenkins our way straight into trouble.",
+            "%s: Attack geometry being refined - weapon release on next approach. We're not pulling a Mo Jenkins here.",
+            "%s: Repositioning for second pass - this time with weapons hot. Mo Jenkins would've charged in guns blazing already.",
+            "%s: Initial pass complete - bombardier finalizing solution for next pass. Patience, Mo Jenkins would've gotten us all killed by now.",
+            "%s: Coming around for release pass - second pass will be the money shot. Unlike Mo Jenkins, we actually plan our attacks.",
+            "%s: Setup complete - weapon employment next pass. At least we're not Mo Jenkins-ing headlong into SAMs.",
+            "%s: First pass complete - refining parameters for weapons release. Mo Jenkins would've blown past the IP already.",
+            "%s: Bombardier calculating final solution - hot pass inbound. Methodical approach beats Mo Jenkins-style chaos every time.",
+            "%s: Repositioning for precision attack - release on next pass. Mo Jenkins probably already triggered every defense in the area."
         }
         
         local msg = ipMessages[math.random(#ipMessages)]
         self:_BroadcastMessage(string.format(msg, self.Callsign))
         BASE:I(string.format("%s: IP setup pass %d - awaiting proper attack geometry", self.Callsign, self.IPRunCount))
+        
+        -- Sanity check: if we've been in ATTACKING state for 10+ minutes without releasing, something is wrong
+        if self.IPRunCount >= 120 then -- 120 * 5 seconds = 600 seconds = 10 minutes
+          BASE:E(string.format("%s: CRITICAL - Stuck in ATTACKING state for 10+ minutes without weapon release!", self.Callsign))
+          self:_BroadcastMessage(string.format("%s: [EMERGENCY] Attack run timeout - aborting to egress!", self.Callsign))
+          -- Force transition to egressing to prevent infinite loop
+          self:__WeaponsReleased(0.1)
+        end
       end
     end
   end, {}, 5, 5) -- Check every 5 seconds
