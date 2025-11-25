@@ -180,8 +180,8 @@ BOMBER_ESCORT_CONFIG = {
   DefaultSpeed = 450,                  -- Knots (default: 350)
 
   -- RTB/Landing Recovery Fallbacks
-  RTBLandingStuckDistance = 8000,      -- Meters - consider the landing leg "stuck" if farther than this from runway on final WP
-  RTBLandingStuckTime = 90,            -- Seconds - time allowed to loiter on the landing leg before forcing a land task
+  RTBLandingStuckDistance = 5000,      -- Meters - consider the landing leg "stuck" if farther than this from runway on final WP
+  RTBLandingStuckTime = 60,            -- Seconds - time allowed to loiter on the landing leg before forcing a land task
   RTBLandingSnapshotInterval = 15,     -- Seconds - minimum interval between repeated landing debug snapshots (set lower for more spam)
   RTBLandingDespawnDelaySeconds = 60, -- Optional - auto-despawn bomber this many seconds after a landing fallback if it still hasn't landed 
 
@@ -3326,7 +3326,7 @@ Target: %s]],
     self.Callsign,
     state,
     escortStatus.Count,
-    self.Bomber.Profile.MinEscorts,
+    self.Bomber.Profile.MinEscorts or 0,
     threatCount,
     math.floor(fuel),
     self.TargetName or "Coordinates"
@@ -3870,7 +3870,7 @@ function BOMBER:New(templateName, missionData)
     BOMBER_LOGGER:Error("SPAWN", "ERROR: Unknown bomber type %s", tostring(missionData.BomberType))
     return nil
   end
-  
+
   -- Mission properties
   self.Coalition = missionData.Coalition or coalition.side.BLUE
   self.Callsign = self:_GenerateCallsign()
@@ -3915,6 +3915,7 @@ function BOMBER:New(templateName, missionData)
   self.LastKnownEscorts = {}  -- List of callsigns we've confirmed as escorts (preserved when they leave)
   self.MaxRosterSize = 20  -- Prevent memory bloat - prune oldest entries beyond this
   self.LastHoldingAnnounce = 0  -- Track last holding announcement time
+  self.LastGroundEscortRequirementTime = 0 -- Throttle "need X escorts" reminders on the ramp
   self.WaitingForEscortDeparture = false  -- Flag: detected ground escort, waiting for them to follow
   self.EscortReadySince = nil  -- Timestamp when escort presence confirmed
   self.EscortTaxiDetectedTime = nil  -- Timestamp when escort movement detected
@@ -6412,7 +6413,8 @@ function BOMBER:_CrewAwarenessCallout(situation)
   elseif situation == "target_approach" then
     -- Crew coordination approaching target
     local escortCount = self.EscortMonitor and self.EscortMonitor.EscortCount or 0
-    if escortCount >= self.Profile.MinEscorts then
+    local neededEscorts = self.Profile.MinEscorts or 1
+    if escortCount >= neededEscorts then
       self:_CrewCallout("target_approach", 
         string.format("%s: [NAV] IP in 2 minutes. [PILOT] Copy. Escorts, stay tight. [BOMBARDIER] Beginning bomb run.", self.Callsign), 90)
     else
@@ -6694,12 +6696,15 @@ function BOMBER:OnEscortLost(unescortedTime, currentEscortCount, hadSufficientEs
       self.EscortLossAnnouncementCount = self.EscortLossAnnouncementCount + 1
       local remainingAnnouncements = math.max(0, maxAnnouncements - self.EscortLossAnnouncementCount)
       local countdownSeconds = remainingAnnouncements * interval
+      local requiredEscorts = self.Profile.MinEscorts or 1
+      local escortWord = requiredEscorts == 1 and "escort" or "escorts"
 
       if remainingAnnouncements > 0 then
-        self:_BroadcastMessage(string.format("%s: [!] No escort in range! Fighters, form up within %d seconds or we're aborting!", 
-          self.Callsign, countdownSeconds))
+        self:_BroadcastMessage(string.format("%s: [!] Need %d %s, currently %d. Fighters, form up within %d seconds or we're aborting!", 
+          self.Callsign, requiredEscorts, escortWord, currentEscortCount, countdownSeconds))
       else
-        self:_BroadcastMessage(string.format("%s: [!] Final call for escorts! Rejoin NOW or mission is scrubbed!", self.Callsign))
+        self:_BroadcastMessage(string.format("%s: [!] FINAL CALL - Need %d %s, none on station! Rejoin NOW or mission is scrubbed!", 
+          self.Callsign, requiredEscorts, escortWord))
       end
     end
 
@@ -6709,7 +6714,13 @@ function BOMBER:OnEscortLost(unescortedTime, currentEscortCount, hadSufficientEs
   end
   
   -- Different handling for insufficient vs lost escorts
+  local abortingOrRTB = self:Is(BOMBER.States.ABORTING) or self:Is(BOMBER.States.RTB)
+
   if currentEscortCount == 0 then
+    if abortingOrRTB then
+      BOMBER_LOGGER:Debug("ESCORT", "%s: Skipping escort loss announcements (currently %s)", self.Callsign, self.CurrentState)
+      return
+    end
     handleZeroEscort()
     return
   end
@@ -6778,7 +6789,7 @@ function BOMBER:OnEscortLost(unescortedTime, currentEscortCount, hadSufficientEs
   end
   
   -- Don't send warnings/abort if already aborting or RTB (but keep monitor running for rejoin detection)
-  if self:Is(BOMBER.States.ABORTING) or self:Is(BOMBER.States.RTB) then
+  if abortingOrRTB then
     return
   end
   
@@ -7619,8 +7630,10 @@ function BOMBER:onenterHolding()
     end
 
     local escortsFound = self:_ScanForGroundEscorts()
-    
-    if escortsFound and #escortsFound > 0 then
+    local escortCount = escortsFound and #escortsFound or 0
+    local minRequired = self.Profile.MinEscorts or 1
+
+    if escortCount >= minRequired then
       local now = timer.getTime()
 
       if not self.WaitingForEscortDeparture then
@@ -7689,6 +7702,31 @@ function BOMBER:onenterHolding()
           end
         end
       end
+    elseif escortCount > 0 then
+      -- Have fighters nearby but not enough to satisfy requirement
+      self.WaitingForEscortDeparture = false
+      self.EscortReadySince = nil
+      self.EscortTaxiDetectedTime = nil
+
+      local reminderInterval = 30
+      if currentTime - (self.LastGroundEscortRequirementTime or 0) >= reminderInterval then
+        local shortage = math.max(0, minRequired - escortCount)
+        local shortageWord = shortage == 1 and "fighter" or "fighters"
+        local escortWord = escortCount == 1 and "escort" or "escorts"
+
+        BOMBER_LOGGER:Info("ESCORT", "%s: Need %d escorts before taxi, currently have %d", 
+          self.Callsign, minRequired, escortCount)
+        self:_BroadcastMessage(string.format("%s: Have %d %s staged but need %d escort%s before we roll. Waiting for %d more %s.",
+          self.Callsign,
+          escortCount,
+          escortWord,
+          minRequired,
+          minRequired == 1 and "" or "s",
+          shortage,
+          shortageWord))
+        self.LastGroundEscortRequirementTime = currentTime
+      end
+
     else
       -- No escorts found - announce periodically (every 2 minutes)
       if currentTime - self.LastHoldingAnnounce >= 120 then
