@@ -3957,6 +3957,7 @@ function BOMBER:New(templateName, missionData)
   self:AddTransition(BOMBER.States.TAXIING, "Takeoff", BOMBER.States.TAKING_OFF)
   self:AddTransition(BOMBER.States.TAKING_OFF, "Blocked", BOMBER.States.BLOCKED)  -- Can get stuck during takeoff roll too
   self:AddTransition(BOMBER.States.TAKING_OFF, "BeginFormUp", BOMBER.States.FORMING_UP)
+  self:AddTransition(BOMBER.States.TAKING_OFF, "BeginClimb", BOMBER.States.CLIMBING)  -- Direct to climbing when escort not required
   self:AddTransition(BOMBER.States.FORMING_UP, "BeginClimb", BOMBER.States.CLIMBING)
   self:AddTransition(BOMBER.States.CLIMBING, "ReachCruise", BOMBER.States.CRUISE)
   self:AddTransition(BOMBER.States.CRUISE, "ApproachTarget", BOMBER.States.PRE_ATTACK)
@@ -7480,11 +7481,33 @@ end
 --- Ensure threat manager is running (lazy start when airborne)
 -- @param #BOMBER self
 function BOMBER:_EnsureThreatManagerRunning()
-  if self.ThreatManager and not self.ThreatManagerStarted then
-    BOMBER_LOGGER:Debug("THREAT", "%s: Starting threat manager (flight phase)", self.Callsign)
-    self.ThreatManager:Start()
-    self.ThreatManagerStarted = true
+  BOMBER_LOGGER:Info("THREAT", "%s: _EnsureThreatManagerRunning() called", self.Callsign)
+  
+  if not self.ThreatManager then
+    BOMBER_LOGGER:Warn("THREAT", "%s: Cannot start threat manager - ThreatManager is nil!", self.Callsign)
+    return
   end
+  
+  BOMBER_LOGGER:Info("THREAT", "%s: ThreatManager exists, checking if already started (flag=%s)", self.Callsign, tostring(self.ThreatManagerStarted))
+  
+  if self.ThreatManagerStarted then
+    BOMBER_LOGGER:Trace("THREAT", "%s: Threat manager already started", self.Callsign)
+    return
+  end
+  
+  BOMBER_LOGGER:Info("THREAT", "%s: Starting threat manager (flight phase)", self.Callsign)
+  
+  local success, err = pcall(function()
+    self.ThreatManager:Start()
+  end)
+  
+  if not success then
+    BOMBER_LOGGER:Error("THREAT", "%s: ERROR starting threat manager: %s", self.Callsign, tostring(err))
+    return
+  end
+  
+  self.ThreatManagerStarted = true
+  BOMBER_LOGGER:Info("THREAT", "%s: Threat manager started successfully - scanning every %d seconds", self.Callsign, self.ThreatManager.CheckInterval or 10)
 end
 
 --- Handle holding timeout - abort mission and cleanup
@@ -8044,11 +8067,29 @@ end
 --- FSM State: Climbing
 -- @param #BOMBER self
 function BOMBER:onenterClimbing()
+  BOMBER_LOGGER:Info("FSM", "%s: onenterClimbing() - START OF FUNCTION", self.Callsign)
+  
   local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
   BOMBER_LOGGER:Info("FSM", "%s: STATE CHANGE - CLIMBING (climbing to %d ft)", self.Callsign, cruiseAlt)
+  
+  BOMBER_LOGGER:Info("FSM", "%s: About to broadcast climbing message", self.Callsign)
   self:_BroadcastMessage(string.format("%s: Climbing to %d ft via staged waypoints. Direct target routing once at altitude.", 
     self.Callsign, cruiseAlt))
+  
+  BOMBER_LOGGER:Info("FSM", "%s: Checking engine start monitor", self.Callsign)
+  -- Stop engine start monitor - startup/takeoff sequence complete
+  if self.EngineStartMonitor then
+    BOMBER_LOGGER:Info("FSM", "%s: Stopping engine start monitor", self.Callsign)
+    self.EngineStartMonitor:Stop()
+    self.EngineStartMonitor = nil
+    BOMBER_LOGGER:Debug("FSM", "%s: Engine start monitor stopped (successfully airborne)", self.Callsign)
+  else
+    BOMBER_LOGGER:Info("FSM", "%s: Engine start monitor is nil (already stopped or never started)", self.Callsign)
+  end
+  
+  BOMBER_LOGGER:Info("FSM", "%s: About to call _EnsureThreatManagerRunning()", self.Callsign)
   self:_EnsureThreatManagerRunning()
+  BOMBER_LOGGER:Info("FSM", "%s: onenterClimbing() - END OF FUNCTION", self.Callsign)
 end
 
 --- FSM State: Cruise
