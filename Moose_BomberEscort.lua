@@ -49,29 +49,54 @@ BOMBER_LOGGER = {
 -- @param #string message Log message (can include format specifiers)
 -- @param ... Additional arguments for string.format
 function BOMBER_LOGGER:Log(level, category, message, ...)
-  if level <= self.CurrentLevel then
-    local levelName = "UNKNOWN"
-    for name, value in pairs(BOMBER_LOG_LEVELS) do
-      if value == level then
-        levelName = name
-        break
-      end
+  if level > self.CurrentLevel then
+    return
+  end
+
+  local levelName = "UNKNOWN"
+  for name, value in pairs(BOMBER_LOG_LEVELS) do
+    if value == level then
+      levelName = name
+      break
     end
-    
-    local formattedMsg = message
-    if select("#", ...) > 0 then
-      formattedMsg = string.format(message, ...)
-    end
-    
-    local fullMessage = string.format("[BOMBER][%s][%s] %s", levelName, category, formattedMsg)
-    
-    if level == BOMBER_LOG_LEVELS.ERROR then
-      env.error(fullMessage)
-    elseif level == BOMBER_LOG_LEVELS.WARN then
-      env.warning(fullMessage)
+  end
+
+  category = category or "GENERAL"
+  local formattedMsg
+  local argCount = select("#", ...)
+
+  if message == nil then
+    formattedMsg = ""
+  elseif argCount > 0 then
+    local ok, result = pcall(string.format, message, ...)
+    if ok then
+      formattedMsg = result
     else
-      env.info(fullMessage)
+      local argBuffer = {}
+      for i = 1, argCount do
+        local value = select(i, ...)
+        argBuffer[#argBuffer + 1] = tostring(value)
+      end
+      formattedMsg = string.format("LOG FORMAT ERROR: %s | template='%s' | args={%s}", tostring(result), tostring(message), table.concat(argBuffer, ", "))
     end
+  else
+    formattedMsg = tostring(message)
+  end
+
+  local fullMessage
+  local ok, result = pcall(string.format, "[BOMBER][%s][%s] %s", tostring(levelName), tostring(category), formattedMsg or "")
+  if ok then
+    fullMessage = result
+  else
+    fullMessage = string.format("[BOMBER][LOGERROR] level=%s category=%s raw=%s", tostring(levelName), tostring(category), formattedMsg or "")
+  end
+
+  if level == BOMBER_LOG_LEVELS.ERROR then
+    env.error(fullMessage)
+  elseif level == BOMBER_LOG_LEVELS.WARN then
+    env.warning(fullMessage)
+  else
+    env.info(fullMessage)
   end
 end
 
@@ -100,8 +125,11 @@ BOMBER_ESCORT_CONFIG = {
   
   -- Escort Requirements
   RequireEscort = true,                -- Bombers require player escort to proceed with mission (default: true, set false to allow solo bomber missions)
-  EscortTimeBeforeAbort = 120,         -- Seconds without escort before abort (default: 120)
-  EscortWarningTime = 30,              -- Seconds before warning about missing escort (default: 30)
+  EscortAirborneJoinGrace = 120,       -- Seconds of grace after liftoff before escort warnings begin (default: 90)
+  EscortFormUpAnnouncementInterval = 60, -- Seconds between "need escort" calls during form-up (default: 60)
+  EscortFormUpMaxAnnouncements = 5,    -- Number of calls before aborting form-up (default: 5)
+  EscortLossAnnouncementInterval = 60, -- Seconds between in-flight escort loss warnings (default: 60)
+  EscortLossMaxAnnouncements = 5,      -- Number of warnings before aborting due to no escort (default: 5)
   
   -- Escort Classification Thresholds
   EscortCloseRange = 5000,             -- Meters - Definite escort range (default: 1km)
@@ -966,7 +994,10 @@ function BOMBER_ESCORT_MONITOR:New(bomber)
   self.PreviousEscortCount = 0  -- Track previous count to detect changes
   self.LastEscortTime = timer.getTime()
   self.UnescortedDuration = 0
-  self.EverHadEscort = false  -- Track if we've ever detected escorts (prevents abort timer during initial join-up)
+  self.FormUpModeActive = false
+  self.FormUpGraceDeadline = nil
+  self.FormUpAnnouncements = 0
+  self.FormUpAbortTriggered = false
   
   -- Configuration from bomber profile
   local profile = bomber.Profile
@@ -1002,6 +1033,27 @@ function BOMBER_ESCORT_MONITOR:Stop()
   end
   
   return self
+end
+
+--- Activate form-up monitoring mode
+-- @param #BOMBER_ESCORT_MONITOR self
+-- @param #number graceSeconds Optional grace period before announcements
+function BOMBER_ESCORT_MONITOR:ActivateFormUpMode(graceSeconds)
+  self.FormUpModeActive = true
+  self.FormUpGraceDeadline = timer.getTime() + (graceSeconds or 0)
+  self.FormUpAnnouncements = 0
+  self.FormUpAbortTriggered = false
+  self.LastEscortTime = timer.getTime()
+  self.UnescortedDuration = 0
+end
+
+--- Deactivate form-up monitoring mode
+-- @param #BOMBER_ESCORT_MONITOR self
+function BOMBER_ESCORT_MONITOR:DeactivateFormUpMode()
+  self.FormUpModeActive = false
+  self.FormUpGraceDeadline = nil
+  self.FormUpAnnouncements = 0
+  self.FormUpAbortTriggered = false
 end
 
 --- Scan for player escorts nearby
@@ -1117,7 +1169,7 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     local velocity = self.Bomber.Group:GetVelocityKNOTS()
     bomberAirborne = (altitude > 100 and velocity > 100)  -- Clearly airborne and flying
   end
-  
+
   if bomberAirborne then
     -- Build current escorts table for roster tracking with classification
     local currentEscorts = {}
@@ -1149,27 +1201,17 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     return  -- Skip escort requirement/abort checks - but escorts are still tracked and acknowledged above
   end
   
-  -- Update escort status (only if escort is required)
-  -- During TAKING_OFF/CLIMBING, count both CONFIRMED + PROBABLE escorts to prevent premature abort while escort catches up
+  -- Update escort status (only if escort is required) based solely on confirmed escorts in the protection bubble
   local effectiveEscortCount = self.EscortCount
-  if (self.Bomber:Is(BOMBER.States.TAKING_OFF) or self.Bomber:Is(BOMBER.States.CLIMBING)) and probableCount > 0 then
-    effectiveEscortCount = self.EscortCount + probableCount
-  end
   
   if effectiveEscortCount >= self.MinEscorts and effectiveEscortCount > 0 then
     self.LastEscortTime = currentTime
     self.UnescortedDuration = 0
-    
-    -- Only set EverHadEscort flag if bomber is airborne (prevents ground detections from starting timer)
-    if bomberAirborne and not self.EverHadEscort then
-      self.EverHadEscort = true  -- Mark that we've had escorts while airborne
-      BOMBER_LOGGER:Info("ESCORT", "%s: Airborne escort detected - abort timer now active", self.Bomber.Callsign)
-    end
-    
-    if not self.Bomber.HasEscort then
-      -- Special case: If bomber is RTB/ABORTING, require close proximity (500m) to resume
+    self.FormUpAnnouncements = 0
+    self.FormUpAbortTriggered = false
+
+    if not self.Bomber.HasEscort and self.EscortCount >= self.MinEscorts then
       local isReturning = self.Bomber:Is(BOMBER.States.RTB) or self.Bomber:Is(BOMBER.States.ABORTING)
-      
       if isReturning then
         -- Check if any escort is within 500m
         local hasCloseEscort = false
@@ -1208,24 +1250,15 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     end
     self.PreviousEscortCount = self.EscortCount
   else
-    -- Only start abort timer if we've had escorts before (prevents abort during initial join-up)
-    if self.EverHadEscort then
-      self.UnescortedDuration = currentTime - self.LastEscortTime
-      
-      -- Determine if escorts were lost or just never had enough
-      local hadSufficientEscorts = (self.PreviousEscortCount >= self.MinEscorts)
-      
-      -- Always call with updated duration to allow progressive warnings/abort
-      if self.UnescortedDuration > 0 then
-        self.Bomber:OnEscortLost(self.UnescortedDuration, self.EscortCount, hadSufficientEscorts)
-      end
-    else
-      -- Haven't had escorts yet - waiting for initial join-up, no warnings
-      BOMBER_LOGGER:Debug("ESCORT", "%s: Waiting for escort to join (no timer yet)", self.Bomber.Callsign)
+    if not self.LastEscortTime then
+      self.LastEscortTime = currentTime
     end
-    
-    self.PreviousEscortCount = self.EscortCount
+    self.UnescortedDuration = math.max(0, currentTime - self.LastEscortTime)
+    local hadSufficientEscorts = (self.PreviousEscortCount >= self.MinEscorts)
+    self.Bomber:OnEscortLost(self.UnescortedDuration, self.EscortCount, hadSufficientEscorts)
   end
+  
+  self.PreviousEscortCount = self.EscortCount
 end
 
 --- Count valid escorts
@@ -3502,6 +3535,7 @@ BOMBER.States = {
   TAXIING = "Taxiing",           -- Moving to runway
   BLOCKED = "Blocked",           -- Stuck on taxiway due to obstruction
   TAKING_OFF = "TakingOff",      -- Takeoff roll and initial climb
+  FORMING_UP = "FormingUp",      -- Airborne, holding for escort join-up
   CLIMBING = "Climbing",         -- Climbing to cruise altitude
   CRUISE = "Cruise",             -- At cruise altitude, en route to target
   PRE_ATTACK = "PreAttack",      -- Approaching target, preparing for attack
@@ -3888,6 +3922,12 @@ function BOMBER:New(templateName, missionData)
   self.RouteStartAuthorized = not self.Profile.EscortRequired  -- Require explicit escort clearance before taxiing
   self.AIHoldForEscort = false  -- Disable AI controller while waiting for escort
   self.ThreatManagerStarted = false
+  self.FormUpStartTime = nil
+  self.FormUpGraceEndTime = nil
+  self.FormUpAnnouncementsMade = 0
+  self.LastFormUpAnnouncementTime = nil
+  self.EscortLossAnnouncementCount = 0
+  self.LastEscortLossAnnouncementTime = nil
   self.PlaceholderGroup = nil  -- Staged bomber used while waiting for escorts
   self.PlaceholderSpawnIndex = nil
   self.PlaceholderActive = false
@@ -3915,12 +3955,13 @@ function BOMBER:New(templateName, missionData)
   self:AddTransition(BOMBER.States.BLOCKED, "ClearBlockage", BOMBER.States.TAXIING)  -- Resume when clear (let normal progression handle takeoff)
   self:AddTransition(BOMBER.States.TAXIING, "Takeoff", BOMBER.States.TAKING_OFF)
   self:AddTransition(BOMBER.States.TAKING_OFF, "Blocked", BOMBER.States.BLOCKED)  -- Can get stuck during takeoff roll too
-  self:AddTransition(BOMBER.States.TAKING_OFF, "BeginClimb", BOMBER.States.CLIMBING)
+  self:AddTransition(BOMBER.States.TAKING_OFF, "BeginFormUp", BOMBER.States.FORMING_UP)
+  self:AddTransition(BOMBER.States.FORMING_UP, "BeginClimb", BOMBER.States.CLIMBING)
   self:AddTransition(BOMBER.States.CLIMBING, "ReachCruise", BOMBER.States.CRUISE)
   self:AddTransition(BOMBER.States.CRUISE, "ApproachTarget", BOMBER.States.PRE_ATTACK)
   self:AddTransition(BOMBER.States.PRE_ATTACK, "BeginAttack", BOMBER.States.ATTACKING)
   self:AddTransition(BOMBER.States.ATTACKING, "BombsAway", BOMBER.States.EGRESSING)
-  self:AddTransition({BOMBER.States.HOLDING, BOMBER.States.ENGINE_STARTING, BOMBER.States.TAXIING, BOMBER.States.BLOCKED, BOMBER.States.TAKING_OFF, BOMBER.States.CLIMBING, BOMBER.States.CRUISE, BOMBER.States.PRE_ATTACK, BOMBER.States.ATTACKING}, "Abort", BOMBER.States.ABORTING)
+  self:AddTransition({BOMBER.States.HOLDING, BOMBER.States.ENGINE_STARTING, BOMBER.States.TAXIING, BOMBER.States.BLOCKED, BOMBER.States.TAKING_OFF, BOMBER.States.FORMING_UP, BOMBER.States.CLIMBING, BOMBER.States.CRUISE, BOMBER.States.PRE_ATTACK, BOMBER.States.ATTACKING}, "Abort", BOMBER.States.ABORTING)
   self:AddTransition({BOMBER.States.EGRESSING, BOMBER.States.ABORTING}, "ReturnToBase", BOMBER.States.RTB)
   self:AddTransition(BOMBER.States.RTB, "Land", BOMBER.States.LANDED)
   self:AddTransition("*", "Destroy", BOMBER.States.DESTROYED)
@@ -3929,6 +3970,7 @@ function BOMBER:New(templateName, missionData)
   self.EscortMonitor = nil
   self.ThreatManager = nil
   self.ThreatManagerStarted = false
+  self.LastCoordErrorTime = nil
   
   return self
 end
@@ -4583,6 +4625,7 @@ function BOMBER:_MonitorEngineStart()
   local hasTransitionedToEngineStarting = false
   local hasTransitionedToTaxiing = false
   local hasTransitionedToTakeoff = false
+  local hasTransitionedToFormingUp = false
   local hasTransitionedToClimbing = false
   
   -- Track last status message time (outside scheduler so it persists across iterations)
@@ -4763,13 +4806,26 @@ function BOMBER:_MonitorEngineStart()
       end
     end
     
-    -- TAKING_OFF -> CLIMBING (airborne and climbing)
-    if not skipGroundTransitions and self:Is(BOMBER.States.TAKING_OFF) and not hasTransitionedToClimbing then
+    -- TAKING_OFF -> FORMING_UP (airborne, waiting for escorts) or directly to CLIMBING if escorts not required
+    if not skipGroundTransitions and self:Is(BOMBER.States.TAKING_OFF) and not hasTransitionedToFormingUp then
       if altitude >= 500 then  -- 500ft AGL = definitely airborne
-        BOMBER_LOGGER:Info("FSM", "%s: Airborne (%.0f ft) -> CLIMBING", self.Callsign, altitude * 3.28084)
-        self:__BeginClimb(0.5)
-        hasTransitionedToClimbing = true
+        if self.Profile.EscortRequired then
+          BOMBER_LOGGER:Info("FSM", "%s: Airborne (%.0f ft) -> FORMING_UP", self.Callsign, altitude * 3.28084)
+          self:__BeginFormUp(0.5)
+          hasTransitionedToFormingUp = true
+        else
+          BOMBER_LOGGER:Info("FSM", "%s: Airborne (%.0f ft) | Escort not required -> CLIMBING", self.Callsign, altitude * 3.28084)
+          self:__BeginClimb(0.5)
+          hasTransitionedToFormingUp = true
+          hasTransitionedToClimbing = true
+        end
       end
+    end
+
+    -- FORMING_UP -> CLIMBING handled elsewhere (escort monitor) but ensure hot start edge cases
+    if not skipGroundTransitions and self:Is(BOMBER.States.FORMING_UP) and not self.Profile.EscortRequired and not hasTransitionedToClimbing then
+      self:__BeginClimb(0.5)
+      hasTransitionedToClimbing = true
     end
     
     -- Start escort monitoring once we're above 500ft (if required and not already started)
@@ -4880,14 +4936,15 @@ function BOMBER:_MonitorEngineStart()
     --   2. Actually airborne and flying (handles air spawns or state transition issues)
     local isActuallyAirborne = false
     if self.Group and self.Group:IsAlive() then
-      local altitude = self.Group:GetAltitude()
-      local velocity = self.Group:GetVelocityKNOTS()
-      isActuallyAirborne = (altitude > 500 and velocity > 100)  -- Clearly airborne and flying (>500ft, >100kts)
+      local altitudeMeters = self.Group:GetAltitude() or 0
+      local velocityKnots = self.Group:GetVelocityKNOTS() or 0
+      local altitudeFeet = altitudeMeters * 3.28084
+      isActuallyAirborne = (altitudeFeet > 500 and velocityKnots > 100)  -- Clearly airborne and flying (>500ft, >100kts)
       -- Only log if we're in early ground states (not already transitioned to flight)
       if isActuallyAirborne and not (self:Is(BOMBER.States.CLIMBING) or self:Is(BOMBER.States.CRUISE) or 
                                      self:Is(BOMBER.States.PRE_ATTACK) or self:Is(BOMBER.States.ATTACKING)) then
         BOMBER_LOGGER:Debug("FSM", "%s: Actually airborne (alt=%.0fft, vel=%.0fkts) - ignoring startup timeout", 
-          self.Callsign, altitude / 0.3048, velocity)
+          self.Callsign, altitudeFeet, velocityKnots)
       end
     end
     
@@ -5596,12 +5653,48 @@ function BOMBER:_MonitorWaypoints()
     BOMBER_LOGGER:Trace("ROUTE", "%s: Current state: %s, Current WP Index: %d/%d", 
       self.Callsign, self:GetState(), self.CurrentWaypointIndex, totalWP)
     
-    -- Get current position
-    local currentPos = self.Group:GetCoordinate()
+    -- Get current position (with fallbacks and throttled logging)
+    local function safeGetCoordinate(positionable)
+      if not positionable then return nil end
+      local ok, coord = pcall(function()
+        return positionable:GetCoordinate()
+      end)
+      if ok then
+        return coord
+      else
+        BOMBER_LOGGER:Trace("ROUTE", "%s: Coordinate read failed (%s)", self.Callsign, tostring(coord))
+        return nil
+      end
+    end
+
+    local currentPos = safeGetCoordinate(self.Group)
+    if not currentPos then
+      local units = self.Group:GetUnits()
+      if units then
+        for _, unit in ipairs(units) do
+          if unit and unit:IsAlive() then
+            local unitCoord = safeGetCoordinate(unit)
+            if unitCoord then
+              currentPos = unitCoord
+              BOMBER_LOGGER:Debug("ROUTE", "%s: Using unit %s coordinate fallback", self.Callsign, unit:GetName() or unit:GetCallsign() or "unknown")
+              break
+            end
+          end
+        end
+      end
+    end
+
     if not currentPos then 
-      BOMBER_LOGGER:Error("ROUTE", "%s: Failed to get current coordinate!", self.Callsign)
+      local now = timer.getTime()
+      if not self.LastCoordErrorTime or (now - self.LastCoordErrorTime) >= 5 then
+        BOMBER_LOGGER:Warn("ROUTE", "%s: Coordinate not available yet (group alive, waiting on DCS updates)", self.Callsign)
+        self.LastCoordErrorTime = now
+      else
+        BOMBER_LOGGER:Trace("ROUTE", "%s: Coordinate still unavailable (throttled)", self.Callsign)
+      end
       return 
     end
+    self.LastCoordErrorTime = nil
     
     BOMBER_LOGGER:Trace("ROUTE", "%s: Current position: %s", self.Callsign, currentPos:ToStringLLDMS())
     
@@ -6409,6 +6502,10 @@ end
 -- @param #number escortCount Number of escorts
 function BOMBER:OnEscortArrived(escortCount)
   self.HasEscort = true
+  self.EscortLossAnnouncementCount = 0
+  self.LastEscortLossAnnouncementTime = nil
+  self.FormUpAnnouncementsMade = 0
+  self.LastFormUpAnnouncementTime = nil
   
   -- Reset escort loss warning flags
   self.EscortLossWarnings = {
@@ -6434,6 +6531,10 @@ function BOMBER:OnEscortArrived(escortCount)
     BOMBER_LOGGER:Debug("ESCORT", "%s: Escort arrival detected but resume is locked (%s)", self.Callsign, self.ResumeLockReason or "no reason provided")
     self:_BroadcastMessage(string.format("%s: Escort contact acknowledged but mission abort is locked. Continuing RTB.", self.Callsign))
     return
+  end
+
+  if self:Is(BOMBER.States.FORMING_UP) then
+    self:OnFormUpComplete(escortCount)
   end
   
   -- If was aborting/RTB and escort returns, can resume mission if conditions allow
@@ -6521,6 +6622,33 @@ function BOMBER:OnEscortArrived(escortCount)
   end
 end
 
+--- Escorts satisfied form-up requirements
+-- @param #BOMBER self
+-- @param #number escortCount Number of escorts on station
+function BOMBER:OnFormUpComplete(escortCount)
+  if not self:Is(BOMBER.States.FORMING_UP) then
+    return
+  end
+
+  BOMBER_LOGGER:Info("ESCORT", "%s: Form-up complete with %d escort(s)", self.Callsign, escortCount)
+  self:_BroadcastMessage(string.format("%s: [OK] Escorts joined. Continuing climb to cruise.", self.Callsign))
+  self:__BeginClimb(0.5)
+end
+
+--- Abort mission due to lack of escort during form-up/in-flight
+-- @param #BOMBER self
+-- @param #string phase Description of phase (form-up/in-flight)
+function BOMBER:AbortDueToNoEscort(phase)
+  phase = phase or "escort loss"
+  if self:Is(BOMBER.States.ABORTING) or self:Is(BOMBER.States.RTB) then
+    return
+  end
+
+  BOMBER_LOGGER:Warn("ESCORT", "%s: Aborting due to %s", self.Callsign, phase)
+  self:_BroadcastMessage(string.format("%s: [X] No escort protection! Aborting mission and returning home!", self.Callsign))
+  self:Abort()
+end
+
 --- Escort lost event
 -- @param #BOMBER self
 -- @param #number unescortedTime Seconds without escort
@@ -6542,8 +6670,50 @@ function BOMBER:OnEscortLost(unescortedTime, currentEscortCount, hadSufficientEs
   end
   
   local minRequired = self.Profile.MinEscorts or 1
+
+  local function handleZeroEscort()
+    local now = timer.getTime()
+    local interval = BOMBER_ESCORT_CONFIG.EscortLossAnnouncementInterval or 60
+    local maxAnnouncements = BOMBER_ESCORT_CONFIG.EscortLossMaxAnnouncements or 5
+    local grace = 0
+    local phase = "in-flight"
+    if self:Is(BOMBER.States.FORMING_UP) then
+      interval = BOMBER_ESCORT_CONFIG.EscortFormUpAnnouncementInterval or interval
+      maxAnnouncements = BOMBER_ESCORT_CONFIG.EscortFormUpMaxAnnouncements or maxAnnouncements
+      grace = math.max(0, (self.FormUpGraceEndTime or now) - now)
+      phase = "form-up"
+      if self.FormUpGraceEndTime and now < self.FormUpGraceEndTime then
+        return
+      end
+    else
+      grace = 0
+    end
+
+    if not self.LastEscortLossAnnouncementTime or (now - self.LastEscortLossAnnouncementTime) >= interval then
+      self.LastEscortLossAnnouncementTime = now
+      self.EscortLossAnnouncementCount = self.EscortLossAnnouncementCount + 1
+      local remainingAnnouncements = math.max(0, maxAnnouncements - self.EscortLossAnnouncementCount)
+      local countdownSeconds = remainingAnnouncements * interval
+
+      if remainingAnnouncements > 0 then
+        self:_BroadcastMessage(string.format("%s: [!] No escort in range! Fighters, form up within %d seconds or we're aborting!", 
+          self.Callsign, countdownSeconds))
+      else
+        self:_BroadcastMessage(string.format("%s: [!] Final call for escorts! Rejoin NOW or mission is scrubbed!", self.Callsign))
+      end
+    end
+
+    if self.EscortLossAnnouncementCount >= maxAnnouncements then
+      self:AbortDueToNoEscort(phase)
+    end
+  end
   
   -- Different handling for insufficient vs lost escorts
+  if currentEscortCount == 0 then
+    handleZeroEscort()
+    return
+  end
+
   if not hadSufficientEscorts and currentEscortCount > 0 then
     -- Have some escorts but not enough
     BOMBER_LOGGER:Warn("ESCORT", "%s: Insufficient escorts - have %d, need %d (%.0fs)", 
@@ -6603,6 +6773,8 @@ function BOMBER:OnEscortLost(unescortedTime, currentEscortCount, hadSufficientEs
   elseif currentEscortCount >= minRequired then
     -- Have enough now, clear the insufficient flag
     self.InsufficientEscortWarning = false
+    self.EscortLossAnnouncementCount = 0
+    self.LastEscortLossAnnouncementTime = nil
   end
   
   -- Don't send warnings/abort if already aborting or RTB (but keep monitor running for rejoin detection)
@@ -7789,6 +7961,46 @@ function BOMBER:onenterTakingOff()
   local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
   self:_BroadcastMessage(string.format("%s: Rolling. Route optimized for climb profile - we'll turn direct to target once at %d ft. Stay close!", 
     self.Callsign, cruiseAlt))
+end
+
+--- FSM State: Forming Up (airborne, waiting for escorts)
+-- @param #BOMBER self
+function BOMBER:onenterFormingUp()
+  BOMBER_LOGGER:Info("FSM", "%s: STATE CHANGE - FORMING_UP (airborne, awaiting escort join-up)", self.Callsign)
+  self:_EnsureThreatManagerRunning()
+
+  if not self.Profile.EscortRequired then
+    BOMBER_LOGGER:Info("ESCORT", "%s: Escort not required - skipping form-up phase", self.Callsign)
+    self:__BeginClimb(0.5)
+    return
+  end
+
+  self.FormUpStartTime = timer.getTime()
+  local grace = math.max(0, BOMBER_ESCORT_CONFIG.EscortAirborneJoinGrace or 0)
+  self.FormUpGraceEndTime = self.FormUpStartTime + grace
+  self.FormUpAnnouncementsMade = 0
+  self.LastFormUpAnnouncementTime = nil
+  self.EscortLossAnnouncementCount = 0
+  self.LastEscortLossAnnouncementTime = nil
+
+  self:_BroadcastMessage(string.format("%s: Airborne and holding for escorts. Fighters, join within %.0f seconds!", 
+    self.Callsign, grace))
+
+  if self.EscortMonitor then
+    self.EscortMonitor:ActivateFormUpMode(grace)
+  end
+end
+
+--- FSM State: Leaving Forming Up
+-- @param #BOMBER self
+function BOMBER:onleaveFormingUp()
+  self.FormUpStartTime = nil
+  self.FormUpGraceEndTime = nil
+  self.FormUpAnnouncementsMade = 0
+  self.LastFormUpAnnouncementTime = nil
+  if self.EscortMonitor then
+    self.EscortMonitor:DeactivateFormUpMode()
+  end
 end
 
 --- FSM State: Climbing
