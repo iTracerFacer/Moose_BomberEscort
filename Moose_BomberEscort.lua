@@ -27,13 +27,71 @@ end
 --B-24J -> Template name: BOMBER_B24J
 
 ---
+-- LOGGING SYSTEM
+-- Central logging function with configurable log levels
+---
+BOMBER_LOG_LEVELS = {
+  NONE = 0,    -- No logging
+  ERROR = 1,   -- Only critical errors
+  WARN = 2,    -- Warnings and errors
+  INFO = 3,    -- General information (default)
+  DEBUG = 4,   -- Detailed debugging information
+  TRACE = 5    -- Very verbose trace-level logging
+}
+
+BOMBER_LOGGER = {
+  CurrentLevel = BOMBER_LOG_LEVELS.DEBUG  -- Set to DEBUG as requested
+}
+
+--- Log a message at specified level
+-- @param #number level Log level from BOMBER_LOG_LEVELS
+-- @param #string category Log category (e.g., "SPAWN", "FSM", "ESCORT")
+-- @param #string message Log message (can include format specifiers)
+-- @param ... Additional arguments for string.format
+function BOMBER_LOGGER:Log(level, category, message, ...)
+  if level <= self.CurrentLevel then
+    local levelName = "UNKNOWN"
+    for name, value in pairs(BOMBER_LOG_LEVELS) do
+      if value == level then
+        levelName = name
+        break
+      end
+    end
+    
+    local formattedMsg = message
+    if select("#", ...) > 0 then
+      formattedMsg = string.format(message, ...)
+    end
+    
+    local fullMessage = string.format("[BOMBER][%s][%s] %s", levelName, category, formattedMsg)
+    
+    if level == BOMBER_LOG_LEVELS.ERROR then
+      env.error(fullMessage)
+    elseif level == BOMBER_LOG_LEVELS.WARN then
+      env.warning(fullMessage)
+    else
+      env.info(fullMessage)
+    end
+  end
+end
+
+--- Convenience logging functions
+function BOMBER_LOGGER:Error(category, message, ...) self:Log(BOMBER_LOG_LEVELS.ERROR, category, message, ...) end
+function BOMBER_LOGGER:Warn(category, message, ...) self:Log(BOMBER_LOG_LEVELS.WARN, category, message, ...) end
+function BOMBER_LOGGER:Info(category, message, ...) self:Log(BOMBER_LOG_LEVELS.INFO, category, message, ...) end
+function BOMBER_LOGGER:Debug(category, message, ...) self:Log(BOMBER_LOG_LEVELS.DEBUG, category, message, ...) end
+function BOMBER_LOGGER:Trace(category, message, ...) self:Log(BOMBER_LOG_LEVELS.TRACE, category, message, ...) end
+
+---
 -- CONFIGURATION
 -- Customize these settings to adjust system behavior
 ---
 BOMBER_ESCORT_CONFIG = {
+  -- Logging Settings
+  LogLevel = BOMBER_LOG_LEVELS.DEBUG,  -- Logging verbosity (NONE=0, ERROR=1, WARN=2, INFO=3, DEBUG=4, TRACE=5)
+  
   -- Message Settings
   MessageDuration = 30,                -- Seconds messages display (default: 15)
-  ShowDetailedLogs = true,             -- Show detailed state change messages to players (default: true)
   
   -- Marker System
   AllowAirSpawnFallback = false,       -- Allow bombers to spawn in air if not on airbase (default: false)
@@ -424,8 +482,8 @@ function BOMBER_MARKER:_ScanForWaypointMarkers(prefix)
           
           table.insert(markerIds, marker.idx)
           
-          env.info(string.format("[BOMBER] Found waypoint marker: %s at seq %d (ID: %d)", 
-            markerText, seqNum, marker.idx))
+          BOMBER_LOGGER:Debug("MARKER", "Found waypoint marker: %s at seq %d (ID: %d)", 
+            markerText, seqNum, marker.idx)
         end
       end
     end
@@ -648,11 +706,11 @@ function BOMBER_MARKER:_ExecuteMissionFromMarkers(coalitionSide, missionData)
     -- Only use airbase if marker is within 5km of it
     if distance < 5000 then
       startAirbase = nearestAirbase:GetName()
-      BASE:I(string.format("Auto-detected airbase: %s (%.0f m from marker)", startAirbase, distance))
+      BOMBER_LOGGER:Info("MARKER", "Auto-detected airbase: %s (%.0f m from marker)", startAirbase, distance)
     else
-      BASE:I(string.format("Marker not on airbase (%.0f m from nearest: %s)", distance, nearestAirbase:GetName()))
+      BOMBER_LOGGER:Debug("MARKER", "Marker not on airbase (%.0f m from nearest: %s)", distance, nearestAirbase:GetName())
       if self.Config.AllowAirSpawnFallback then
-        BASE:I("Air spawn fallback enabled - proceeding with air spawn")
+        BOMBER_LOGGER:Info("MARKER", "Air spawn fallback enabled - proceeding with air spawn")
         self:_SendMessage(coalitionSide, string.format(
           "[!] BOMBER1 not on airbase - using air spawn\n\n" ..
           "Nearest: %s (%.1f km away)\n" ..
@@ -672,9 +730,9 @@ function BOMBER_MARKER:_ExecuteMissionFromMarkers(coalitionSide, missionData)
       end
     end
   else
-    BASE:I("No friendly airbase found near marker")
+    BOMBER_LOGGER:Debug("MARKER", "No friendly airbase found near marker")
     if self.Config.AllowAirSpawnFallback then
-      BASE:I("Air spawn fallback enabled - proceeding with air spawn")
+      BOMBER_LOGGER:Info("MARKER", "Air spawn fallback enabled - proceeding with air spawn")
       self:_SendMessage(coalitionSide, "[!] No airbase nearby - using air spawn")
     else
       self:_SendMessage(coalitionSide, 
@@ -845,10 +903,10 @@ end
 -- @return #boolean success
 -- @return #BOMBER_MISSION mission The bomber mission object or error string
 function BOMBER_MARKER:_SpawnBomberMission(missionData)
-  BASE:I("*** BOMBER MISSION SPAWN REQUESTED ***")
-  BASE:I(string.format("Type: %s x%d", missionData.BomberType, missionData.FlightSize))
-  BASE:I(string.format("Start: %s", missionData.StartAirbase or "Coordinates"))
-  BASE:I(string.format("Target: %s", missionData.TargetName or "Coordinates"))
+  BOMBER_LOGGER:Info("SPAWN", "*** BOMBER MISSION SPAWN REQUESTED ***")
+  BOMBER_LOGGER:Info("SPAWN", "Type: %s x%d", missionData.BomberType, missionData.FlightSize)
+  BOMBER_LOGGER:Info("SPAWN", "Start: %s", missionData.StartAirbase or "Coordinates")
+  BOMBER_LOGGER:Info("SPAWN", "Target: %s", missionData.TargetName or "Coordinates")
   
   -- Create mission manager if it doesn't exist
   if not _BOMBER_MISSION_MANAGER then
@@ -957,7 +1015,7 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     :FilterCategories("plane")
     :FilterOnce()
   
-  BASE:I(string.format("%s: Scanning for escorts within %.1f km...", self.Bomber.Callsign, self.MaxEscortDistance/1000))
+  BOMBER_LOGGER:Trace("ESCORT", "%s: Scanning for escorts within %.1f km...", self.Bomber.Callsign, self.MaxEscortDistance/1000)
   local scannedCount = 0
   local playerCount = 0
   local fighterCount = 0
@@ -975,8 +1033,8 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
       
       -- Check if it's a fighter (not bomber, attacker, or helicopter)
       local isFighter = self:_IsFighterType(unitType)
-      BASE:I(string.format("%s: Found player aircraft '%s' (Type: %s, IsFighter: %s)", 
-        self.Bomber.Callsign, unit:GetName(), unitType, tostring(isFighter)))
+      BOMBER_LOGGER:Trace("ESCORT", "%s: Found player aircraft '%s' (Type: %s, IsFighter: %s)", 
+        self.Bomber.Callsign, unit:GetName(), unitType, tostring(isFighter))
       
       if isFighter then
         fighterCount = fighterCount + 1
@@ -1005,21 +1063,21 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
               Details = details
             }
             
-            BASE:I(string.format("%s: ESCORT DETECTED - %s at %.1f km [%s] (Hdg: %.0f°, Alt: %.0fft, Spd: %.0fkts | Diff - Hdg: %.0f°, Alt: %.0fft, Spd: %.0fkts)", 
+            BOMBER_LOGGER:Debug("ESCORT", "%s: ESCORT DETECTED - %s at %.1f km [%s] (Hdg: %.0f°, Alt: %.0fft, Spd: %.0fkts | Diff - Hdg: %.0f°, Alt: %.0fft, Spd: %.0fkts)", 
               self.Bomber.Callsign, unitName, distance/1000, string.upper(classification),
               details.heading or 0, details.altitude or 0, details.speed or 0,
-              details.headingDiff or 0, details.altDiff or 0, details.speedDiff or 0))
+              details.headingDiff or 0, details.altDiff or 0, details.speedDiff or 0)
           else
-            BASE:I(string.format("%s: Fighter %s too far (%.1f km > %.1f km)", 
-              self.Bomber.Callsign, unit:GetName(), distance/1000, self.MaxEscortDistance/1000))
+            BOMBER_LOGGER:Trace("ESCORT", "%s: Fighter %s too far (%.1f km > %.1f km)", 
+              self.Bomber.Callsign, unit:GetName(), distance/1000, self.MaxEscortDistance/1000)
           end
         end
       end
     end
   end)
   
-  BASE:I(string.format("%s: Escort scan complete - Total: %d, Players: %d, Fighters: %d | Confirmed: %d, Probable: %d, Passing: %d", 
-    self.Bomber.Callsign, scannedCount, playerCount, fighterCount, confirmedCount, probableCount, passingCount))
+  BOMBER_LOGGER:Debug("ESCORT", "%s: Escort scan complete - Total: %d, Players: %d, Fighters: %d | Confirmed: %d, Probable: %d, Passing: %d", 
+    self.Bomber.Callsign, scannedCount, playerCount, fighterCount, confirmedCount, probableCount, passingCount)
   
   -- Update escort tracking (only count CONFIRMED escorts for mission requirements)
   self.EscortUnits = escortsFound
@@ -1035,8 +1093,8 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     end
     if probableCount > 0 then
       local phase = self.Bomber:Is(BOMBER.States.TAKING_OFF) and "TAKING_OFF" or "CLIMBING"
-      BASE:I(string.format("%s: %s phase - %d confirmed + %d probable escorts (probable resets abort timer)", 
-        self.Bomber.Callsign, phase, self.EscortCount, probableCount))
+      BOMBER_LOGGER:Debug("ESCORT", "%s: %s phase - %d confirmed + %d probable escorts (probable resets abort timer)", 
+        self.Bomber.Callsign, phase, self.EscortCount, probableCount)
     end
   end
   
@@ -1063,7 +1121,7 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     -- Update bomber's dynamic escort roster (with join/leave announcements)
     self.Bomber:_UpdateEscortRoster(currentEscorts)
   else
-    BASE:I(string.format("%s: Bomber not yet airborne - skipping escort roster updates", self.Bomber.Callsign))
+    BOMBER_LOGGER:Trace("ESCORT", "%s: Bomber not yet airborne - skipping escort roster updates", self.Bomber.Callsign)
   end
   
   -- Check for tight formation flying and send compliments
@@ -1075,7 +1133,7 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
   local escortRequired = self.Bomber.Profile.EscortRequired
   
   if not escortRequired then
-    BASE:I(string.format("%s: Escort not required for this bomber type - operating independently (escorts still recognized and appreciated)", self.Bomber.Callsign))
+    BOMBER_LOGGER:Info("ESCORT", "%s: Escort not required for this bomber type - operating independently (escorts still recognized and appreciated)", self.Bomber.Callsign)
     return  -- Skip escort requirement/abort checks - but escorts are still tracked and acknowledged above
   end
   
@@ -1093,7 +1151,7 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
     -- Only set EverHadEscort flag if bomber is airborne (prevents ground detections from starting timer)
     if bomberAirborne and not self.EverHadEscort then
       self.EverHadEscort = true  -- Mark that we've had escorts while airborne
-      BASE:I(string.format("%s: Airborne escort detected - abort timer now active", self.Bomber.Callsign))
+      BOMBER_LOGGER:Info("ESCORT", "%s: Airborne escort detected - abort timer now active", self.Bomber.Callsign)
     end
     
     if not self.Bomber.HasEscort then
@@ -1117,12 +1175,12 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
         end
         
         if hasCloseEscort then
-          BASE:I(string.format("%s: RTB escort join - %s within %.0fm (required <500m)", 
-            self.Bomber.Callsign, closestCallsign, closestDistance))
+          BOMBER_LOGGER:Debug("ESCORT", "%s: RTB escort join - %s within %.0fm (required <500m)", 
+            self.Bomber.Callsign, closestCallsign, closestDistance)
           self.Bomber:OnEscortArrived(self.EscortCount)
         else
-          BASE:I(string.format("%s: RTB - Escort detected but too far for resume (closest: %s at %.0fm, need <500m)", 
-            self.Bomber.Callsign, closestCallsign or "none", closestDistance))
+          BOMBER_LOGGER:Debug("ESCORT", "%s: RTB - Escort detected but too far for resume (closest: %s at %.0fm, need <500m)", 
+            self.Bomber.Callsign, closestCallsign or "none", closestDistance)
           
           -- Send message to players (throttled to once per 60 seconds to prevent spam)
           if not self.Bomber.LastProximityWarningTime or (currentTime - self.Bomber.LastProximityWarningTime) >= 60 then
@@ -1151,7 +1209,7 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
       end
     else
       -- Haven't had escorts yet - waiting for initial join-up, no warnings
-      BASE:I(string.format("%s: Waiting for escort to join (no timer yet)", self.Bomber.Callsign))
+      BOMBER_LOGGER:Debug("ESCORT", "%s: Waiting for escort to join (no timer yet)", self.Bomber.Callsign)
     end
     
     self.PreviousEscortCount = self.EscortCount
@@ -1295,22 +1353,22 @@ function BOMBER_ESCORT_MONITOR:_ClassifyEscort(escortUnit, distance)
     headingMultiplier = 4.0                       -- 4x heading tolerance (180° - any direction during departure)
     altMultiplier = 3.0 * flightSizeScale         -- 3x base altitude tolerance (scales with flight size)
     speedMultiplier = 3.0 * flightSizeScale       -- 3x base speed tolerance (scales with flight size)
-    BASE:I(string.format("%s: TAKING_OFF phase (flight:%d, scale:%.1fx) - very relaxed escort detection (range:%.1fx=%.0fkm, hdg:%.1fx, alt:%.1fx, spd:%.1fx)", 
-      self.Bomber.Callsign, flightSize, flightSizeScale, rangeMultiplier, rangeMultiplier * 10, headingMultiplier, altMultiplier, speedMultiplier))
+    BOMBER_LOGGER:Debug("ESCORT", "%s: TAKING_OFF phase (flight:%d, scale:%.1fx) - very relaxed escort detection (range:%.1fx=%.0fkm, hdg:%.1fx, alt:%.1fx, spd:%.1fx)", 
+      self.Bomber.Callsign, flightSize, flightSizeScale, rangeMultiplier, rangeMultiplier * 10, headingMultiplier, altMultiplier, speedMultiplier)
   elseif self.Bomber:Is(BOMBER.States.CLIMBING) then
     -- During climb - relaxed for formation assembly
     rangeMultiplier = 3.5 * flightSizeScale      -- 3.5x base (35km single, 52.5km for 2, 70km for 3, 87.5km for 4)
     headingMultiplier = 3.0                       -- 3x heading tolerance (135° - escorts can approach from behind)
     altMultiplier = 2.5 * flightSizeScale         -- 2.5x base altitude tolerance (scales with flight size)
     speedMultiplier = 2.5 * flightSizeScale       -- 2.5x base speed tolerance (scales with flight size)
-    BASE:I(string.format("%s: CLIMBING phase (flight:%d, scale:%.1fx) - relaxed escort detection (range:%.1fx=%.0fkm, hdg:%.1fx, alt:%.1fx, spd:%.1fx)", 
-      self.Bomber.Callsign, flightSize, flightSizeScale, rangeMultiplier, rangeMultiplier * 10, headingMultiplier, altMultiplier, speedMultiplier))
+    BOMBER_LOGGER:Debug("ESCORT", "%s: CLIMBING phase (flight:%d, scale:%.1fx) - relaxed escort detection (range:%.1fx=%.0fkm, hdg:%.1fx, alt:%.1fx, spd:%.1fx)", 
+      self.Bomber.Callsign, flightSize, flightSizeScale, rangeMultiplier, rangeMultiplier * 10, headingMultiplier, altMultiplier, speedMultiplier)
   else
     -- CRUISE and beyond - distance-only mode (escorts need tactical freedom)
     distanceOnlyMode = true
     rangeMultiplier = 2.0  -- 20km max range
-    BASE:I(string.format("%s: CRUISE+ phase - distance-only escort detection (range: %.0fkm, no heading/alt/speed checks)", 
-      self.Bomber.Callsign, rangeMultiplier * 10))
+    BOMBER_LOGGER:Debug("ESCORT", "%s: CRUISE+ phase - distance-only escort detection (range: %.0fkm, no heading/alt/speed checks)", 
+      self.Bomber.Callsign, rangeMultiplier * 10)
   end
   
   local closeRange = BOMBER_ESCORT_CONFIG.EscortCloseRange * rangeMultiplier
@@ -1416,8 +1474,8 @@ function BOMBER_ESCORT_MONITOR:_CheckFormationFlying(escortsFound, currentTime)
             lastComplimentTime = 0,
             inFormation = true
           }
-          BASE:I(string.format("%s: %s entered tight formation (%.0fm)", 
-            self.Bomber.Callsign, data.Unit:GetCallsign() or unitName, distance))
+          BOMBER_LOGGER:Debug("ESCORT", "%s: %s entered tight formation (%.0fm)", 
+            self.Bomber.Callsign, data.Unit:GetCallsign() or unitName, distance)
         end
         
         local tracker = self.FormationFlyingTracker[unitName]
@@ -1436,23 +1494,23 @@ function BOMBER_ESCORT_MONITOR:_CheckFormationFlying(escortsFound, currentTime)
           
           tracker.lastComplimentTime = currentTime
           
-          BASE:I(string.format("%s: Formation compliment sent to %s (%.0fm, %.0f min in formation)", 
-            self.Bomber.Callsign, callsign, distance, formationDuration/60))
+          BOMBER_LOGGER:Debug("ESCORT", "%s: Formation compliment sent to %s (%.0fm, %.0f min in formation)", 
+            self.Bomber.Callsign, callsign, distance, formationDuration/60)
         end
       else
         -- Not matching parameters well enough, reset tracker
         if self.FormationFlyingTracker[unitName] then
-          BASE:I(string.format("%s: %s no longer in tight formation (hdg:%s alt:%s spd:%s)", 
+          BOMBER_LOGGER:Trace("ESCORT", "%s: %s no longer in tight formation (hdg:%s alt:%s spd:%s)", 
             self.Bomber.Callsign, data.Unit:GetCallsign() or unitName,
-            tostring(headingMatch), tostring(altMatch), tostring(speedMatch)))
+            tostring(headingMatch), tostring(altMatch), tostring(speedMatch))
           self.FormationFlyingTracker[unitName] = nil
         end
       end
     else
       -- Too far for formation flying, clear tracker
       if self.FormationFlyingTracker[unitName] then
-        BASE:I(string.format("%s: %s moved out of formation range (%.0fm > %dm)", 
-          self.Bomber.Callsign, data.Unit:GetCallsign() or unitName, distance, formationRange))
+        BOMBER_LOGGER:Trace("ESCORT", "%s: %s moved out of formation range (%.0fm > %dm)", 
+          self.Bomber.Callsign, data.Unit:GetCallsign() or unitName, distance, formationRange)
         self.FormationFlyingTracker[unitName] = nil
       end
     end
@@ -1461,8 +1519,8 @@ function BOMBER_ESCORT_MONITOR:_CheckFormationFlying(escortsFound, currentTime)
   -- Clean up trackers for escorts no longer detected
   for unitName, tracker in pairs(self.FormationFlyingTracker) do
     if not escortsFound[unitName] then
-      BASE:I(string.format("%s: %s no longer detected, removing formation tracker", 
-        self.Bomber.Callsign, unitName))
+      BOMBER_LOGGER:Trace("ESCORT", "%s: %s no longer detected, removing formation tracker", 
+        self.Bomber.Callsign, unitName)
       self.FormationFlyingTracker[unitName] = nil
     end
   end
@@ -2302,7 +2360,7 @@ function BOMBER_MISSION_MANAGER:_InitializeMenus()
       end
     )
     
-    BASE:I(string.format("Bomber F10 menus created for %s coalition", coalitionName))
+    BOMBER_LOGGER:Info("MENU", "Bomber F10 menus created for %s coalition", coalitionName)
   end
 end
 
@@ -2505,7 +2563,7 @@ function BOMBER_MISSION_MANAGER:RegisterMission(mission)
   mission.MissionID = self.MissionCounter
   self.ActiveMissions[mission.MissionID] = mission
   
-  BASE:I(string.format("Mission %d registered: %s", mission.MissionID, mission.Callsign))
+  BOMBER_LOGGER:Info("MISSION", "Mission %d registered: %s", mission.MissionID, mission.Callsign)
 end
 
 --- Unregister a completed mission
@@ -2586,7 +2644,7 @@ end
 -- @param #BOMBER_MISSION self
 -- @return #boolean Success
 function BOMBER_MISSION:Start()
-  BASE:I(string.format("Starting mission: %s", self.Callsign))
+  BOMBER_LOGGER:Info("MISSION", "Starting mission: %s", self.Callsign)
   
   -- Create template name from bomber type
   local templateName = self:_GetTemplateName()
@@ -2646,9 +2704,9 @@ function BOMBER_MISSION:_BuildRoute()
     local airbase = AIRBASE:FindByName(self.StartAirbase)
     if airbase then
       startCoord = airbase:GetCoordinate()
-      BASE:I(string.format("Start from airbase: %s at %s", self.StartAirbase, startCoord:ToStringLLDMS()))
+      BOMBER_LOGGER:Info("ROUTE", "Start from airbase: %s at %s", self.StartAirbase, startCoord:ToStringLLDMS())
     else
-      env.warning(string.format("[BOMBER] Airbase '%s' not found", self.StartAirbase))
+      BOMBER_LOGGER:Warn("MARKER", "Airbase '%s' not found", self.StartAirbase)
     end
   end
   
@@ -3493,6 +3551,7 @@ BOMBER.BombardierCallouts = {
   "Turning their house into abstract art!",
   "Demolition permit not required!",
   "Surprise renovation!",
+  "Oh, shit.. was that Mo's house?, my bad.. *wink*"
   "Someone's getting a very open floor plan!",
   "Making a driveway... through the house!",
   "Impromptu pool installation!",
@@ -6502,13 +6561,13 @@ function BOMBER:_CheckSAMReroute()
   -- Determine target coordinate based on current state
   local targetCoord = nil
   
-  if self:Is(BOMBER.States.FLYING) then
+  if self:Is(BOMBER.States.CRUISE) or self:Is(BOMBER.States.CLIMBING) then
     -- En route to target - check path to target
     if self.TargetCoord then
       targetCoord = self.TargetCoord
     end
-  elseif self:Is(BOMBER.States.ATTACKING) then
-    -- Already attacking, let it complete
+  elseif self:Is(BOMBER.States.PRE_ATTACK) or self:Is(BOMBER.States.ATTACKING) then
+    -- Already committed to attack run, don't reroute
     return
   end
   
@@ -7790,9 +7849,15 @@ end
 function BOMBER_ESCORT_INIT(options)
   options = options or {}
   
-  BASE:I("==============================================")
-  BASE:I("MOOSE BOMBER ESCORT SYSTEM INITIALIZING")
-  BASE:I("==============================================")
+  -- Initialize logger with configured log level
+  BOMBER_LOGGER.CurrentLevel = BOMBER_ESCORT_CONFIG.LogLevel or BOMBER_LOG_LEVELS.DEBUG
+  
+  BOMBER_LOGGER:Info("INIT", "==============================================")
+  BOMBER_LOGGER:Info("INIT", "MOOSE BOMBER ESCORT SYSTEM INITIALIZING")
+  BOMBER_LOGGER:Info("INIT", "==============================================")
+  BOMBER_LOGGER:Info("INIT", "Log Level: %s (%d)", 
+    ({[0]="NONE",[1]="ERROR",[2]="WARN",[3]="INFO",[4]="DEBUG",[5]="TRACE"})[BOMBER_LOGGER.CurrentLevel], 
+    BOMBER_LOGGER.CurrentLevel)
   
   -- Create global marker parser
   _BOMBER_MARKER_SYSTEM = BOMBER_MARKER:New()
@@ -7800,79 +7865,79 @@ function BOMBER_ESCORT_INIT(options)
   -- Create global mission manager (creates F10 menus)
   if not _BOMBER_MISSION_MANAGER then
     _BOMBER_MISSION_MANAGER = BOMBER_MISSION_MANAGER:New()
-    BASE:I("Bomber Mission Manager: ACTIVE")
-    BASE:I("F10 Menus Created:")
-    BASE:I("  - Launch Bomber Mission (submit markers)")
-    BASE:I("  - Respawn Last Mission")
-    BASE:I("  - Mission Status (shows active bombers)")
-    BASE:I("  - Quick Start Guide (player help)")
+    BOMBER_LOGGER:Info("INIT", "Bomber Mission Manager: ACTIVE")
+    BOMBER_LOGGER:Info("INIT", "F10 Menus Created:")
+    BOMBER_LOGGER:Info("INIT", "  - Launch Bomber Mission (submit markers)")
+    BOMBER_LOGGER:Info("INIT", "  - Respawn Last Mission")
+    BOMBER_LOGGER:Info("INIT", "  - Mission Status (shows active bombers)")
+    BOMBER_LOGGER:Info("INIT", "  - Quick Start Guide (player help)")
   end
   
-  BASE:I("Bomber Marker System: ACTIVE (On-Demand)")
-  BASE:I("Available Bomber Types:")
+  BOMBER_LOGGER:Info("INIT", "Bomber Marker System: ACTIVE (On-Demand)")
+  BOMBER_LOGGER:Info("INIT", "Available Bomber Types:")
   local types = BOMBER_PROFILE:ListTypes()
   for _, bomberType in ipairs(types) do
-    BASE:I("  - " .. bomberType)
+    BOMBER_LOGGER:Info("INIT", "  - %s", bomberType)
   end
-  BASE:I("==============================================")
-  BASE:I("HOW TO USE:")
-  BASE:I("1. Place F10 map markers to plan your route")
-  BASE:I("2. Use F10 -> Bomber Missions -> Launch Mission")
-  BASE:I("3. System validates markers and spawns bomber")
-  BASE:I("==============================================")
-  BASE:I("Required Markers:")
-  BASE:I("  BOMBER1:[Type]:[Size]:FL[Alt]:[Speed]")
-  BASE:I("  TARGET1:[AttackType]:[Heading]")
-  BASE:I("")
-  BASE:I("Optional Markers:")
-  BASE:I("  BOMBER2-n (route waypoints)")
-  BASE:I("  TARGET2-n (additional targets)")
-  BASE:I("  EGRESS1-n (egress waypoints)")
-  BASE:I("  RTB1 (return to base point)")
-  BASE:I("")
-  BASE:I("Quick Examples:")
-  BASE:I("  BOMBER1:B-52H")
-  BASE:I("  TARGET1")
-  BASE:I("")
-  BASE:I("  BOMBER1:B-17G:6:FL200:180")
-  BASE:I("  TARGET1:RUNWAY:270")
-  BASE:I("==============================================")
-  BASE:I("F10 Menu Workflow:")
-  BASE:I("  1. Place markers at your own pace")
-  BASE:I("  2. F10 -> Bomber Missions -> Launch Mission")
-  BASE:I("  3. System validates and reports any issues")
-  BASE:I("  4. Fix markers if needed, retry Launch")
-  BASE:I("  5. Mission spawns when all checks pass")
-  BASE:I("")
-  BASE:I("After mission complete/failed:")
-  BASE:I("  F10 -> Bomber Missions -> Respawn Last Mission")
-  BASE:I("==============================================")
-  BASE:I("Formations: Automatic based on bomber type")
-  BASE:I("  WWII: Box formation (tight)")
-  BASE:I("  Modern: Line Abreast (loose)")
-  BASE:I("==============================================")
-  BASE:I("Template Groups Required:")
+  BOMBER_LOGGER:Info("INIT", "==============================================")
+  BOMBER_LOGGER:Info("INIT", "HOW TO USE:")
+  BOMBER_LOGGER:Info("INIT", "1. Place F10 map markers to plan your route")
+  BOMBER_LOGGER:Info("INIT", "2. Use F10 -> Bomber Missions -> Launch Mission")
+  BOMBER_LOGGER:Info("INIT", "3. System validates markers and spawns bomber")
+  BOMBER_LOGGER:Info("INIT", "==============================================")
+  BOMBER_LOGGER:Info("INIT", "Required Markers:")
+  BOMBER_LOGGER:Info("INIT", "  BOMBER1:[Type]:[Size]:FL[Alt]:[Speed]")
+  BOMBER_LOGGER:Info("INIT", "  TARGET1:[AttackType]:[Heading]")
+  BOMBER_LOGGER:Info("INIT", "")
+  BOMBER_LOGGER:Info("INIT", "Optional Markers:")
+  BOMBER_LOGGER:Info("INIT", "  BOMBER2-n (route waypoints)")
+  BOMBER_LOGGER:Info("INIT", "  TARGET2-n (additional targets)")
+  BOMBER_LOGGER:Info("INIT", "  EGRESS1-n (egress waypoints)")
+  BOMBER_LOGGER:Info("INIT", "  RTB1 (return to base point)")
+  BOMBER_LOGGER:Info("INIT", "")
+  BOMBER_LOGGER:Info("INIT", "Quick Examples:")
+  BOMBER_LOGGER:Info("INIT", "  BOMBER1:B-52H")
+  BOMBER_LOGGER:Info("INIT", "  TARGET1")
+  BOMBER_LOGGER:Info("INIT", "")
+  BOMBER_LOGGER:Info("INIT", "  BOMBER1:B-17G:6:FL200:180")
+  BOMBER_LOGGER:Info("INIT", "  TARGET1:RUNWAY:270")
+  BOMBER_LOGGER:Info("INIT", "==============================================")
+  BOMBER_LOGGER:Info("INIT", "F10 Menu Workflow:")
+  BOMBER_LOGGER:Info("INIT", "  1. Place markers at your own pace")
+  BOMBER_LOGGER:Info("INIT", "  2. F10 -> Bomber Missions -> Launch Mission")
+  BOMBER_LOGGER:Info("INIT", "  3. System validates and reports any issues")
+  BOMBER_LOGGER:Info("INIT", "  4. Fix markers if needed, retry Launch")
+  BOMBER_LOGGER:Info("INIT", "  5. Mission spawns when all checks pass")
+  BOMBER_LOGGER:Info("INIT", "")
+  BOMBER_LOGGER:Info("INIT", "After mission complete/failed:")
+  BOMBER_LOGGER:Info("INIT", "  F10 -> Bomber Missions -> Respawn Last Mission")
+  BOMBER_LOGGER:Info("INIT", "==============================================")
+  BOMBER_LOGGER:Info("INIT", "Formations: Automatic based on bomber type")
+  BOMBER_LOGGER:Info("INIT", "  WWII: Box formation (tight)")
+  BOMBER_LOGGER:Info("INIT", "  Modern: Line Abreast (loose)")
+  BOMBER_LOGGER:Info("INIT", "==============================================")
+  BOMBER_LOGGER:Info("INIT", "Template Groups Required:")
   for _, bomberType in ipairs(types) do
     local profile = BOMBER_PROFILE:Get(bomberType)
     local templateName = string.gsub(bomberType, "[-]", "")
     templateName = string.gsub(templateName, "MS", "")
-    BASE:I(string.format("  BOMBER_%s for %s", string.upper(templateName), bomberType))
+    BOMBER_LOGGER:Info("INIT", "  BOMBER_%s for %s", string.upper(templateName), bomberType)
   end
-  BASE:I("  (Set Late Activation in mission editor)")
-  BASE:I("==============================================")
-  BASE:I("Features:")
-  BASE:I("  [OK] On-demand marker submission (no auto-spam)")
-  BASE:I("  [OK] Numbered waypoint system (BOMBER1, TARGET1)")
-  BASE:I("  [OK] Auto-detect spawn airbase from marker")
-  BASE:I("  [OK] Multiple targets in sequence")
-  BASE:I("  [OK] Runway carpet bombing (auto or manual heading)")
-  BASE:I("  [OK] Custom egress routes (EGRESS1-n, RTB1)")
-  BASE:I("  [OK] F10 mission control and validation")
-  BASE:I("  [OK] Formation management")
-  BASE:I("  [OK] Mission respawn system")
-  BASE:I("==============================================")
-  BASE:I("For complete documentation, see MARKER_GUIDE.md")
-  BASE:I("==============================================")
+  BOMBER_LOGGER:Info("INIT", "  (Set Late Activation in mission editor)")
+  BOMBER_LOGGER:Info("INIT", "==============================================")
+  BOMBER_LOGGER:Info("INIT", "Features:")
+  BOMBER_LOGGER:Info("INIT", "  [OK] On-demand marker submission (no auto-spam)")
+  BOMBER_LOGGER:Info("INIT", "  [OK] Numbered waypoint system (BOMBER1, TARGET1)")
+  BOMBER_LOGGER:Info("INIT", "  [OK] Auto-detect spawn airbase from marker")
+  BOMBER_LOGGER:Info("INIT", "  [OK] Multiple targets in sequence")
+  BOMBER_LOGGER:Info("INIT", "  [OK] Runway carpet bombing (auto or manual heading)")
+  BOMBER_LOGGER:Info("INIT", "  [OK] Custom egress routes (EGRESS1-n, RTB1)")
+  BOMBER_LOGGER:Info("INIT", "  [OK] F10 mission control and validation")
+  BOMBER_LOGGER:Info("INIT", "  [OK] Formation management")
+  BOMBER_LOGGER:Info("INIT", "  [OK] Mission respawn system")
+  BOMBER_LOGGER:Info("INIT", "==============================================")
+  BOMBER_LOGGER:Info("INIT", "For complete documentation, see MARKER_GUIDE.md")
+  BOMBER_LOGGER:Info("INIT", "==============================================")
 
   
   return _BOMBER_MARKER_SYSTEM
