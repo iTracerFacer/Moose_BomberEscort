@@ -6,6 +6,7 @@
 -- @module BOMBER_ESCORT
 -- @author F99th-TracerFacer
 -- @copyright 2025
+--
 
 -- Global spawn counter to ensure unique MOOSE spawn indices
 if not _BOMBER_GLOBAL_SPAWN_COUNTER then
@@ -121,7 +122,6 @@ BOMBER_ESCORT_CONFIG = {
   -- Marker System
   AllowAirSpawnFallback = false,       -- Allow bombers to spawn in air if not on airbase (default: false)
   DeleteMarkersAfterUse = true,        -- Auto-remove markers after mission starts (default: true)
-  MarkerCheckInterval = 2,             -- Seconds between marker scans (default: 2)
   
   -- Escort Requirements
   RequireEscort = true,                -- Bombers require player escort to proceed with mission (default: true, set false to allow solo bomber missions)
@@ -152,17 +152,19 @@ BOMBER_ESCORT_CONFIG = {
   SAMStatusSummaryInterval = 80,       -- Seconds between SAM status summary messages (default: 80s = 1:20)
   SAMAutoCountermeasureRange = 30000,  -- Meters - Auto-deploy countermeasures inside this range (default: 30km)
   
-  -- SAM Threat Detection and Abort System (Dynamic Rerouting Disabled)
+  -- SAM Threat Detection and Abort System
   EnableSAMAvoidance = true,           -- Enable SAM threat detection and mission abort (default: true)
   SAMAvoidanceBuffer = 25000,          -- Meters - Buffer added to SAM range for threat assessment (default: 25km)
+  SAMCorridorBuffer = 10000,           -- Meters - Smaller buffer for corridor finding (pre-planning can be more aggressive, default: 10km)
   SAMRouteLookAhead = 150000,          -- Meters - Check route this far ahead for SAMs (default: 150km)
   SAMAvoidOnlyIfCanEngage = true,      -- Only abort for SAMs that can engage at current altitude (default: true)
   SAMRerouteCheckInterval = 10,        -- Seconds between route threat checks during flight (default: 10s)
-  -- Unused (Dynamic Rerouting Disabled):
-  -- SAMCorridorMinWidth = 15000,      -- (Not used - corridor finding disabled)
-  -- SAMMaxDetourPercent = 75,         -- (Not used - dynamic rerouting disabled)
-  -- SAMMaxDetourAbsolute = 150000,    -- (Not used - dynamic rerouting disabled)
-  -- SAMFuelReservePercent = 20,       -- (Not used - dynamic rerouting disabled)
+  
+  -- SAM Corridor Finding (Pre-Spawn Route Planning)
+  SAMMaxDetourPercent = 150,           -- Max detour as percentage of direct distance (default: 75%)
+  SAMMaxDetourAbsolute = 300000,       -- Max detour absolute distance in meters (default: 150km)
+  SAMCorridorMinWidth = 15000,         -- Minimum safe corridor width in meters (default: 15km)
+  SAMFuelReservePercent = 20,          -- Minimum fuel reserve percentage for detours (default: 20%)
   
   -- Dynamic Threat Assessment
   EnableThreatAssessment = true,       -- Enable dynamic threat-to-escort ratio checking (default: true)
@@ -201,16 +203,21 @@ BOMBER_MARKER = {
 
 --- Marker configuration
 BOMBER_MARKER.Config = {
-  waypointPrefix = "BOMBER",        -- Waypoint marker prefix (BOMBER1, BOMBER2, etc.)
-  targetPrefix = "TARGET",          -- Target marker prefix (TARGET1)
+  waypointPrefix = "BOMBER",        -- Legacy: Waypoint marker prefix (BOMBER1, BOMBER2, etc.)
+  targetPrefix = "TARGET",          -- Legacy: Target marker prefix (TARGET1)
   respawnPrefix = "RESPAWN",        -- Respawn marker prefix (RESPAWN1)
-  egressPrefix = "EGRESS",          -- Egress waypoint prefix (EGRESS1, EGRESS2, etc.)
-  rtbPrefix = "RTB",                -- RTB marker prefix (RTB1)
+  egressPrefix = "EGRESS",          -- Legacy: Egress waypoint prefix (EGRESS1, EGRESS2, etc.)
+  rtbPrefix = "RTB",                -- Legacy: RTB marker prefix (RTB1)
   deleteMarkersAfterUse = BOMBER_ESCORT_CONFIG.DeleteMarkersAfterUse,
-  minWaypoints = 1,                 -- Minimum waypoints (BOMBER1 is required)
+  minWaypoints = 1,                 -- Minimum waypoints
   maxWaypoints = 10,                -- Maximum route waypoints
-  checkInterval = BOMBER_ESCORT_CONFIG.MarkerCheckInterval,
   AllowAirSpawnFallback = BOMBER_ESCORT_CONFIG.AllowAirSpawnFallback,
+  
+  -- New multi-mission marker keywords
+  spawnKeywords = {"SPAWN", "START"},  -- Keywords for spawn point
+  waypointKeyword = "WP",              -- Waypoint keyword
+  targetKeyword = "TARGET",            -- Target keyword
+  rtbKeyword = "RTB",                  -- RTB keyword
 }
 
 ---
@@ -408,19 +415,28 @@ end
 -- @param #string markerText The text from the map marker
 -- @param #number defaultAlt Default altitude if not specified (feet)
 -- @param #number defaultSpeed Default speed if not specified (knots)
--- @return #table Parsed parameters: {type, size, altitude, speed, originalText}
+-- @return #table Parsed parameters: {type, size, altitude, speed, force, originalText}
 function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed)
+  -- Check for FORCE flag first (case-insensitive, anywhere in string)
+  local forceOverride = string.find(string.upper(markerText), ":FORCE") ~= nil
+  
+  -- Remove :FORCE from text before parsing other params (case-insensitive)
+  local cleanText = string.gsub(markerText, ":FORCE", "")
+  cleanText = string.gsub(cleanText, ":force", "")
+  cleanText = string.gsub(cleanText, ":Force", "")
+  
   local result = {
     type = nil,
     size = nil, -- Will use profile default if not specified
     altitude = defaultAlt or BOMBER_ESCORT_CONFIG.DefaultAltitude,
     speed = defaultSpeed or BOMBER_ESCORT_CONFIG.DefaultSpeed,
+    force = forceOverride,
     originalText = markerText
   }
   
   -- Split by colon delimiter
   local parts = {}
-  for part in string.gmatch(markerText, "[^:]+") do
+  for part in string.gmatch(cleanText, "[^:]+") do
     table.insert(parts, (string.gsub(part, "^%s*(.-)%s*$", "%1"))) -- Trim whitespace
   end
   
@@ -809,6 +825,7 @@ function BOMBER_MARKER:_ExecuteMissionFromMarkers(coalitionSide, missionData)
     FlightSize = flightSize,
     CruiseAlt = params.altitude,
     CruiseSpeed = params.speed,
+    ForceLaunch = params.force or false,
     RouteWaypoints = {},
     EgressWaypoints = {},
     RTBWaypoint = nil,
@@ -1028,9 +1045,13 @@ function BOMBER_ESCORT_MONITOR:Stop()
     self.SchedulerID = nil
   end
   
-  -- Clear tracking data
+  -- Memory management: Clear tracking data to prevent memory leaks
   if self.FormationFlyingTracker then
     self.FormationFlyingTracker = {}
+  end
+  
+  if self.EscortUnits then
+    self.EscortUnits = {}
   end
   
   return self
@@ -1144,7 +1165,7 @@ function BOMBER_ESCORT_MONITOR:_ScanForEscorts()
   BOMBER_LOGGER:Debug("ESCORT", "%s: Escort scan complete - Total: %d, Players: %d, Fighters: %d | Confirmed: %d, Probable: %d, Passing: %d", 
     self.Bomber.Callsign, scannedCount, playerCount, fighterCount, confirmedCount, probableCount, passingCount)
   
-  -- Update escort tracking (only count CONFIRMED escorts for mission requirements)
+  -- Memory management: Replace escort tracking table (no accumulation - replaced on each scan)
   self.EscortUnits = escortsFound
   self.EscortCount = self:_CountConfirmedEscorts(escortsFound)
   
@@ -1495,7 +1516,7 @@ function BOMBER_ESCORT_MONITOR:_CheckFormationFlying(escortsFound, currentTime)
   local formationRange = BOMBER_ESCORT_CONFIG.EscortFormationRange
   local complimentInterval = BOMBER_ESCORT_CONFIG.EscortFormationComplimentInterval
   
-  -- Initialize tracking table if needed
+  -- Memory management: Initialize tracking table if needed
   if not self.FormationFlyingTracker then
     self.FormationFlyingTracker = {}
   end
@@ -1562,7 +1583,7 @@ function BOMBER_ESCORT_MONITOR:_CheckFormationFlying(escortsFound, currentTime)
     end
   end
   
-  -- Clean up trackers for escorts no longer detected
+  -- Memory management: Clean up trackers for escorts no longer detected (prevent unbounded growth)
   for unitName, tracker in pairs(self.FormationFlyingTracker) do
     if not escortsFound[unitName] then
       BOMBER_LOGGER:Trace("ESCORT", "%s: %s no longer detected, removing formation tracker", 
@@ -1874,14 +1895,14 @@ function BOMBER_THREAT_MANAGER:_UpdateThreats(newThreats)
       
       self.Bomber:OnThreatDetected(threatData)
       
-      -- Add to history (keep last 50 entries to prevent unbounded growth)
+      -- Memory management: Add to history (keep last 50 entries to prevent unbounded growth)
       table.insert(self.ThreatHistory, {
         ThreatId = threatId,
         Type = threatData.Type,
         TimeDetected = threatData.Time
       })
       
-      -- Limit history size
+      -- Prune history if it exceeds limit
       if #self.ThreatHistory > 50 then
         table.remove(self.ThreatHistory, 1)
       end
@@ -1907,10 +1928,12 @@ end
 -- @return #table SAM data from database
 function BOMBER_THREAT_MANAGER:_IdentifySAM(typeName)
   if not typeName then
+    BOMBER_LOGGER:Debug("THREAT", "_IdentifySAM: nil typeName, returning UNKNOWN")
     return BOMBER_THREAT_MANAGER.SAMDatabase["UNKNOWN"]
   end
   
   local typeUpper = string.upper(typeName)
+  BOMBER_LOGGER:Debug("THREAT", "_IdentifySAM: Analyzing '%s' (upper: '%s')", typeName, typeUpper)
   
   -- Match against known SAM systems
   for samKey, samData in pairs(BOMBER_THREAT_MANAGER.SAMDatabase) do
@@ -1918,13 +1941,20 @@ function BOMBER_THREAT_MANAGER:_IdentifySAM(typeName)
       local keyUpper = string.upper(samKey)
       -- Check for SAM designation in unit name
       if string.find(typeUpper, keyUpper) or string.find(typeUpper, string.gsub(keyUpper, "-", "")) then
+        BOMBER_LOGGER:Debug("THREAT", "_IdentifySAM: MATCH - key '%s' found in '%s' -> %s", 
+          samKey, typeName, samData.name)
         return samData
       end
     end
   end
   
+  BOMBER_LOGGER:Debug("THREAT", "_IdentifySAM: No database match, trying fallback patterns")
+  
+  BOMBER_LOGGER:Debug("THREAT", "_IdentifySAM: No database match, trying fallback patterns")
+  
   -- Check for specific DCS unit names
   if string.find(typeUpper, "S%-300") or string.find(typeUpper, "S300") then
+    BOMBER_LOGGER:Debug("THREAT", "_IdentifySAM: Fallback pattern 'S-300' matched -> SA-10")
     return BOMBER_THREAT_MANAGER.SAMDatabase["SA-10"]
   elseif string.find(typeUpper, "S%-400") or string.find(typeUpper, "S400") then
     return BOMBER_THREAT_MANAGER.SAMDatabase["SA-20"]
@@ -1948,6 +1978,7 @@ function BOMBER_THREAT_MANAGER:_IdentifySAM(typeName)
     return BOMBER_THREAT_MANAGER.SAMDatabase["Rapier"]
   end
   
+  BOMBER_LOGGER:Debug("THREAT", "_IdentifySAM: No match found for '%s', returning UNKNOWN", typeName)
   return BOMBER_THREAT_MANAGER.SAMDatabase["UNKNOWN"]
 end
 
@@ -2091,49 +2122,66 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:AnalyzeRoute(fromCoord, toCoord, samThreats
   
   local directDistance = fromCoord:Get2DDistance(toCoord)
   local directHeading = fromCoord:HeadingTo(toCoord)
-  local bomberAlt = self.Bomber.Group:GetAltitude() * 3.28084 -- meters to feet
+  
+  -- Get bomber altitude - use actual if in flight, otherwise use planned cruise altitude
+  local bomberAlt
+  if self.Bomber.Group and self.Bomber.Group:IsAlive() then
+    bomberAlt = self.Bomber.Group:GetAltitude() * 3.28084 -- meters to feet
+  else
+    -- Pre-spawn analysis: use planned cruise altitude from profile
+    bomberAlt = self.Bomber.Profile and self.Bomber.Profile.CruiseAlt or 25000
+  end
   
   -- Build threat zones from active SAMs
   local threatZones = {}
   local threatsOnRoute = {}
   
   for threatId, threat in pairs(samThreats) do
-    if threat.Type == BOMBER_THREAT_MANAGER.ThreatType.SAM then
-      -- Only consider SAMs that can engage at current altitude if configured
-      local shouldProcess = true
-      if BOMBER_ESCORT_CONFIG.SAMAvoidOnlyIfCanEngage and not threat.CanEngage then
-        -- Skip this SAM, it's harmless at our altitude
-        shouldProcess = false
-      end
-      
-      if shouldProcess then
-        local samCoord = threat.Group:GetCoordinate()
-        if samCoord then
-          local samData = threat.SAMData or BOMBER_THREAT_MANAGER.SAMDatabase["UNKNOWN"]
-          local threatRadius = samData.maxRange + BOMBER_ESCORT_CONFIG.SAMAvoidanceBuffer
+    if threat.Type == BOMBER_THREAT_MANAGER.ThreatType.SAM and threat.Group then
+      local samCoord = threat.Group:GetCoordinate()
+      if samCoord then
+        local samData = threat.SAMData or BOMBER_THREAT_MANAGER.SAMDatabase["UNKNOWN"]
+        local threatRadius = samData.maxRange + BOMBER_ESCORT_CONFIG.SAMAvoidanceBuffer
+        
+        -- Calculate closest point on route to SAM
+        local distanceToRoute = self:_PointToLineDistance(samCoord, fromCoord, toCoord)
+        local closestPointOnRoute = self:_ClosestPointOnLine(samCoord, fromCoord, toCoord)
+        local distanceFromCurrentPos = fromCoord:Get2DDistance(closestPointOnRoute)
+        
+        -- PREDICTIVE THREAT ASSESSMENT:
+        -- Check if SAM will be able to engage when we reach closest approach point
+        -- Use current altitude as projection (conservative - assumes we don't climb higher)
+        local willBeAbleToEngage = true
+        if BOMBER_ESCORT_CONFIG.SAMAvoidOnlyIfCanEngage then
+          local closestDistance = samCoord:Get2DDistance(closestPointOnRoute)
+          willBeAbleToEngage = closestDistance <= samData.maxRange and 
+                               bomberAlt >= samData.minAlt and 
+                               bomberAlt <= samData.maxAlt
+        end
+        
+        -- Only process SAMs that will threaten us along the route
+        if willBeAbleToEngage and distanceToRoute < threatRadius then
+          BOMBER_LOGGER:Debug("THREAT", "%s: SAM %s will be able to engage along route (closest approach: %.1f km, range: %.1f km)",
+            self.Bomber.Callsign, threat.SAMType, distanceToRoute / 1000, samData.maxRange / 1000)
           
-          -- Check if this SAM threatens the direct route
-          local distanceToRoute = self:_PointToLineDistance(samCoord, fromCoord, toCoord)
-          
-          if distanceToRoute < threatRadius then
-            table.insert(threatsOnRoute, {
-              id = threatId,
-              coord = samCoord,
-              radius = threatRadius,
-              samType = threat.SAMType,
-              threatLevel = threat.ThreatLevel,
-              distanceToRoute = distanceToRoute,
-              threat = threat
-            })
-          end
-          
-          table.insert(threatZones, {
+          table.insert(threatsOnRoute, {
             id = threatId,
             coord = samCoord,
             radius = threatRadius,
-            samType = threat.SAMType
+            samType = threat.SAMType,
+            threatLevel = threat.ThreatLevel,
+            distanceToRoute = distanceToRoute,
+            closestApproach = distanceFromCurrentPos,
+            threat = threat
           })
         end
+        
+        table.insert(threatZones, {
+          id = threatId,
+          coord = samCoord,
+          radius = threatRadius,
+          samType = threat.SAMType
+        })
       end
     end
   end
@@ -2144,36 +2192,26 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:AnalyzeRoute(fromCoord, toCoord, samThreats
       isSafe = true,
       threats = {},
       corridors = {},
-      recommendation = "Direct route clear",
+      recommendation = {action = "PROCEED", message = "Direct route clear"},
       directDistance = directDistance
     }
   end
   
-  -- Dynamic rerouting disabled - just assess if route is safe
-  -- If threats block the direct route, mission must abort
-  
-  BOMBER_LOGGER:Debug("THREAT", "%s: Route blocked by %d SAM site(s) - abort required", 
+  -- Threats detected on direct route - attempt to find safe corridors
+  BOMBER_LOGGER:Debug("THREAT", "%s: Route blocked by %d SAM site(s) - searching for corridors", 
     self.Bomber.Callsign, #threatsOnRoute)
   
-  -- Build threat description for abort message
-  local samTypes = {}
-  for _, threat in ipairs(threatsOnRoute) do
-    table.insert(samTypes, threat.samType)
-  end
+  local corridors = self:_FindCorridors(fromCoord, toCoord, threatZones)
   
-  local recommendation = {
-    action = "ABORT",
-    route = nil,
-    message = string.format("Route blocked by SAM coverage (%s) - RTB",
-      table.concat(samTypes, ", ")),
-    distance = 0,
-    reason = "SAM_BLOCK"
-  }
+  BOMBER_LOGGER:Debug("THREAT", "%s: Found %d corridor option(s)", self.Bomber.Callsign, #corridors)
+  
+  -- Evaluate route options (direct vs corridors vs abort)
+  local recommendation = self:_EvaluateRouteOptions(fromCoord, toCoord, directDistance, threatsOnRoute, corridors)
   
   return {
-    isSafe = false,
+    isSafe = recommendation.action == "PROCEED" or recommendation.action == "REROUTE",
     threats = threatsOnRoute,
-    corridors = {},
+    corridors = corridors,
     recommendation = recommendation,
     directDistance = directDistance
   }
@@ -2183,7 +2221,7 @@ end
 -- @param #BOMBER_SAM_AVOIDANCE_ROUTER self
 -- @param #COORDINATE fromCoord Start
 -- @param #COORDINATE toCoord End
--- @param #table threatZones Array of SAM threat zones
+-- @param #table threatZones Array of SAM threat zones (with larger buffer for detection)
 -- @return #table Array of corridor options with waypoints
 function BOMBER_SAM_AVOIDANCE_ROUTER:_FindCorridors(fromCoord, toCoord, threatZones)
   local corridors = {}
@@ -2192,38 +2230,82 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:_FindCorridors(fromCoord, toCoord, threatZo
     return corridors
   end
   
+  -- Rebuild threat zones with SMALLER buffer for corridor planning (more aggressive)
+  -- We use a tighter margin for pre-mission planning since we have time to optimize
+  local corridorThreatZones = {}
+  for _, zone in ipairs(threatZones) do
+    -- Original zone used SAMAvoidanceBuffer (25km), rebuild with SAMCorridorBuffer (10km)
+    -- Calculate original SAM range by subtracting the old buffer
+    local samMaxRange = zone.radius - BOMBER_ESCORT_CONFIG.SAMAvoidanceBuffer
+    local corridorRadius = samMaxRange + BOMBER_ESCORT_CONFIG.SAMCorridorBuffer
+    
+    table.insert(corridorThreatZones, {
+      id = zone.id,
+      coord = zone.coord,
+      radius = corridorRadius,  -- Tighter radius for corridor finding
+      samType = zone.samType
+    })
+  end
+  
   local directDistance = fromCoord:Get2DDistance(toCoord)
   BOMBER_LOGGER:Debug("THREAT", "%s: Searching for corridors - Direct distance: %.1f km, %d threat zone(s)", 
-    self.Bomber.Callsign, directDistance / 1000, #threatZones)
+    self.Bomber.Callsign, directDistance / 1000, #corridorThreatZones)
   
   -- Try different approach angles to find gaps
   local directHeading = fromCoord:HeadingTo(toCoord)
-  -- Extended test angles for better coverage, prioritizing moderate deviations first
+  -- Test perpendicular and diagonal offsets
   local testAngles = {
-    -30, 30, -45, 45, -60, 60, -75, 75, -90, 90,
-    -105, 105, -120, 120, -135, 135, -150, 150, 
-    -15, 15  -- Try smaller angles last (less likely to help with wide SAM coverage)
+    -90, 90,  -- Pure perpendicular (south/north if flying west)
+    -75, 75, -105, 105,  -- Diagonal back
+    -60, 60, -120, 120,  -- More diagonal
+    -45, 45, -135, 135,  -- 45-degree offsets
+    -30, 30, -150, 150,  -- Smaller offsets
+    -15, 15, -165, 165   -- Very small offsets
   }
   
-  -- Also try different projection distances (50%, 60%, 70%, 80% of direct route)
-  local projectionPercents = {0.7, 0.6, 0.8, 0.5}
+  -- Test various projection distances - need to go FAR to clear SAM fields
+  -- For 292km direct route: 50% = 146km, 100% = 292km, 150% = 438km
+  local projectionPercents = {0.5, 0.7, 1.0, 0.3, 1.2, 0.9, 1.5}
+  
+  local failureReasons = {}  -- Track why corridors fail for debugging
   
   for _, angleOffset in ipairs(testAngles) do
     local testHeading = (directHeading + angleOffset) % 360
     
     for _, projectionPct in ipairs(projectionPercents) do
-      local corridor = self:_TestCorridorPath(fromCoord, toCoord, testHeading, threatZones, projectionPct)
+      local corridor = self:_TestCorridorPath(fromCoord, toCoord, testHeading, corridorThreatZones, projectionPct)
       
       if corridor.isValid then
         table.insert(corridors, corridor)
         -- Found a valid corridor, no need to try other projections for this angle
         break
+      else
+        -- Log first few failures for debugging
+        if #failureReasons < 5 then
+          table.insert(failureReasons, string.format("Heading %03d° @ %.0f%%: %s", testHeading, projectionPct * 100, corridor.reason or "unknown"))
+        end
       end
     end
   end
   
-  -- Sort corridors by total distance (prefer shorter detours)
-  table.sort(corridors, function(a, b) return a.totalDistance < b.totalDistance end)
+  -- Log failure reasons if no corridors found
+  if #corridors == 0 and #failureReasons > 0 then
+    BOMBER_LOGGER:Debug("THREAT", "%s: Sample corridor failures:", self.Bomber.Callsign)
+    for _, reason in ipairs(failureReasons) do
+      BOMBER_LOGGER:Debug("THREAT", "%s:   - %s", self.Bomber.Callsign, reason)
+    end
+  end
+  
+  -- Sort corridors by clearance first (prefer maximum safety margin), then by distance
+  table.sort(corridors, function(a, b)
+    -- If clearance difference is significant (>5km), prefer the safer one
+    local clearanceDiff = math.abs(a.minClearance - b.minClearance)
+    if clearanceDiff > 5000 then  -- 5km threshold
+      return a.minClearance > b.minClearance  -- Prefer larger clearance (safer)
+    end
+    -- If clearance is similar, prefer shorter route
+    return a.totalDistance < b.totalDistance
+  end)
   
   return corridors
 end
@@ -2234,6 +2316,7 @@ end
 -- @param #COORDINATE toCoord End  
 -- @param #number heading Test heading in degrees
 -- @param #table threatZones SAM threat zones
+-- @param #number projectionPercent Percentage of direct distance to travel on test heading
 -- @return #table Corridor data {isValid, waypoints, totalDistance}
 function BOMBER_SAM_AVOIDANCE_ROUTER:_TestCorridorPath(fromCoord, toCoord, heading, threatZones, projectionPercent)
   local directDistance = fromCoord:Get2DDistance(toCoord)
@@ -2245,20 +2328,27 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:_TestCorridorPath(fromCoord, toCoord, headi
   -- Use provided projection percent or default to 70%
   local projPct = projectionPercent or 0.7
   
-  -- Project waypoint along test heading
-  local testDistance = directDistance * projPct -- Use variable projection distance
+  -- Project waypoint along test heading - use LONGER distances to clear SAM field
+  -- For a 292km direct route, we need to go far enough to get around the SAMs
+  local testDistance = directDistance * projPct
   local waypointCoord = fromCoord:Translate(testDistance, heading)
   
   -- Check if waypoint avoids all threat zones
   local safe = true
   local failReason = nil
+  local minClearance = math.huge  -- Track closest approach to any SAM
+  
   for _, zone in ipairs(threatZones) do
     local distToZone = waypointCoord:Get2DDistance(zone.coord)
+    local clearance = distToZone - zone.radius
+    
     if distToZone < zone.radius then
       safe = false
       failReason = string.format("Waypoint inside %s (%.1f km < %.1f km)", zone.samType or "SAM", distToZone/1000, zone.radius/1000)
       break
     end
+    
+    minClearance = math.min(minClearance, clearance)
   end
   
   if not safe then
@@ -2268,11 +2358,15 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:_TestCorridorPath(fromCoord, toCoord, headi
   -- Check if path from waypoint to target is clear
   for _, zone in ipairs(threatZones) do
     local distToRoute = self:_PointToLineDistance(zone.coord, waypointCoord, toCoord)
+    local clearance = distToRoute - zone.radius
+    
     if distToRoute < zone.radius then
       safe = false
       failReason = string.format("Second leg blocked by %s (%.1f km < %.1f km)", zone.samType or "SAM", distToRoute/1000, zone.radius/1000)
       break
     end
+    
+    minClearance = math.min(minClearance, clearance)
   end
   
   if not safe then
@@ -2290,8 +2384,8 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:_TestCorridorPath(fromCoord, toCoord, headi
       (totalDistance - directDistance)/1000, maxDetourDist/1000)}
   end
   
-  BOMBER_LOGGER:Debug("THREAT", "%s: VALID CORRIDOR FOUND - Heading %03d°, projection %.0f%%, detour +%.1f km", 
-    self.Bomber.Callsign, heading, projPct * 100, (totalDistance - directDistance) / 1000)
+  BOMBER_LOGGER:Debug("THREAT", "%s: VALID CORRIDOR FOUND - Heading %03d°, projection %.0f%%, detour +%.1f km, clearance %.1f km", 
+    self.Bomber.Callsign, heading, projPct * 100, (totalDistance - directDistance) / 1000, minClearance / 1000)
   
   return {
     isValid = true,
@@ -2299,7 +2393,8 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:_TestCorridorPath(fromCoord, toCoord, headi
     totalDistance = totalDistance,
     detourDistance = totalDistance - directDistance,
     heading = heading,
-    projectionPercent = projPct
+    projectionPercent = projPct,
+    minClearance = minClearance  -- Minimum distance from any SAM threat zone
   }
 end
 
@@ -2336,6 +2431,40 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:_PointToLineDistance(point, lineStart, line
   local dist = math.sqrt((px - closestX)^2 + (py - closestY)^2)
   
   return dist
+end
+
+--- Get closest point on line segment
+-- @param #BOMBER_SAM_AVOIDANCE_ROUTER self
+-- @param #COORDINATE point Point to project
+-- @param #COORDINATE lineStart Line start
+-- @param #COORDINATE lineEnd Line end
+-- @return #COORDINATE Closest point on line segment
+function BOMBER_SAM_AVOIDANCE_ROUTER:_ClosestPointOnLine(point, lineStart, lineEnd)
+  local px, py = point.x, point.z
+  local x1, y1 = lineStart.x, lineStart.z
+  local x2, y2 = lineEnd.x, lineEnd.z
+  
+  local dx = x2 - x1
+  local dy = y2 - y1
+  
+  if dx == 0 and dy == 0 then
+    -- Line is actually a point
+    return lineStart
+  end
+  
+  -- Calculate the t parameter (projection of point onto line)
+  local t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+  
+  -- Clamp t to [0, 1] to stay on line segment
+  t = math.max(0, math.min(1, t))
+  
+  -- Find closest point on line
+  local closestX = x1 + t * dx
+  local closestY = y1 + t * dy
+  
+  -- Create coordinate at closest point (use average altitude)
+  local avgAlt = (lineStart.y + lineEnd.y) / 2
+  return COORDINATE:New(closestX, avgAlt, closestY)
 end
 
 --- Evaluate route options and recommend action
@@ -2381,8 +2510,6 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:_EvaluateRouteOptions(fromCoord, toCoord, d
   end
   
   -- No safe corridors found
-  local maxDetour = BOMBER_ESCORT_CONFIG.SAMMaxDetourAbsolute
-  
   -- Describe the SAM wall
   local samTypes = {}
   for _, threat in ipairs(threatsOnRoute) do
@@ -2414,9 +2541,14 @@ function BOMBER_SAM_AVOIDANCE_ROUTER:_CheckFuelViability(plannedDistance)
   end
   
   local fuelRemaining = unit:GetFuel() -- Returns 0.0 to 1.0
+  if not fuelRemaining then
+    -- Fuel data unavailable, assume sufficient for safety
+    return {viable = true, percentRemaining = 100, reason = "Fuel data unavailable"}
+  end
+  
   local percentRemaining = fuelRemaining * 100
   
-  -- Need reserve plus percentage for detour
+  -- Need reserve for detour
   local requiredPercent = BOMBER_ESCORT_CONFIG.SAMFuelReservePercent
   
   if percentRemaining >= requiredPercent then
@@ -2752,6 +2884,16 @@ function BOMBER_MISSION_MANAGER:UnregisterMission(mission)
       EndTime = timer.getTime()
     })
     BOMBER_LOGGER:Info("MISSION", "Mission %d completed: %s", mission.MissionID, mission.Callsign)
+    
+    -- Memory management: Prune completed missions list to prevent unbounded growth
+    -- Keep only last 50 completed missions
+    if #self.CompletedMissions > 50 then
+      local toRemove = #self.CompletedMissions - 50
+      for i = 1, toRemove do
+        table.remove(self.CompletedMissions, 1)
+      end
+      BOMBER_LOGGER:Debug("MISSION", "Pruned %d old missions from CompletedMissions list (keeping last 50)", toRemove)
+    end
   end
 end
 
@@ -2800,6 +2942,7 @@ function BOMBER_MISSION:New(missionData)
   -- Mission parameters
   self.CruiseAlt = missionData.CruiseAlt
   self.CruiseSpeed = missionData.CruiseSpeed
+  self.ForceLaunch = missionData.ForceLaunch or false
   
   -- Status
   self.MissionActive = false
@@ -2848,6 +2991,26 @@ function BOMBER_MISSION:Start()
   
   -- Build route
   self:_BuildRoute()
+  
+  -- Pre-spawn SAM threat analysis
+  local threatAnalysis = self:_AnalyzePlannedRoute()
+  
+  if threatAnalysis.blocked and not self.ForceLaunch then
+    -- Mission blocked by SAM threats and no :FORCE override
+    BOMBER_LOGGER:Warn("SPAWN", "Mission blocked by SAM threats (no :FORCE override)")
+    
+    -- Send detailed threat report to coalition
+    MESSAGE:New(threatAnalysis.message, 30):ToCoalition(self.Coalition)
+    
+    return false
+  elseif #(threatAnalysis.threats or {}) > 0 then
+    -- Threats detected but mission launching (either :FORCE or safe corridor found)
+    BOMBER_LOGGER:Info("SPAWN", "Launching with SAM threats present - %s", 
+      self.ForceLaunch and "FORCE override active" or "safe corridor found")
+    
+    -- Send advisory to coalition
+    MESSAGE:New(threatAnalysis.message, 25):ToCoalition(self.Coalition)
+  end
   
   -- Spawn bomber
   local success = self.Bomber:Spawn()
@@ -3242,7 +3405,27 @@ function BOMBER_MISSION:_BuildRoute()
       self.Bomber.TargetCoord:ToStringLLDMS(), #targetWaypointMapping)
   end
   
+  -- NOTE: Corridor waypoint integration is not currently implemented
+  -- The SAM analysis will detect threats and find safe corridors, but inserting
+  -- corridor waypoints into the pre-built route would require route reconstruction.
+  -- Current behavior:
+  --   - Pre-spawn: Block mission if SAMs detected (unless :FORCE used)
+  --   - In-flight: Abort if SAMs get radar lock (even with :FORCE)
+  -- Future enhancement: Rebuild route with corridor waypoints when safe path found
+  
   BOMBER_LOGGER:Info("ROUTE", "Route built: %d waypoints", #waypoints)
+end
+
+--- Count entries in a table
+-- @param #BOMBER_MISSION self
+-- @param #table tbl Table to count
+-- @return #number Count of entries
+function BOMBER_MISSION:_CountTableEntries(tbl)
+  local count = 0
+  for _ in pairs(tbl or {}) do
+    count = count + 1
+  end
+  return count
 end
 
 --- Create target zone
@@ -3255,6 +3438,291 @@ function BOMBER_MISSION:_CreateTargetZone()
     return ZONE_RADIUS:New(firstTarget.name or "Target", coord:GetVec2(), 2000) -- 2km radius
   end
   return nil
+end
+
+--- Analyze planned route for SAM threats (pre-spawn check)
+-- @param #BOMBER_MISSION self
+-- @return #table Threat analysis {blocked, threats, corridors, message}
+function BOMBER_MISSION:_AnalyzePlannedRoute()
+  BOMBER_LOGGER:Info("THREAT", "Pre-spawn SAM analysis starting...")
+  
+  if not BOMBER_ESCORT_CONFIG.EnableSAMAvoidance then
+    BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: SAM avoidance disabled in config")
+    return {blocked = false, message = "SAM avoidance disabled"}
+  end
+  
+  if not self.Bomber or not self.Bomber.Route or #self.Bomber.Route < 2 then
+    BOMBER_LOGGER:Warn("THREAT", "Pre-spawn analysis: No route available (Bomber: %s, Route: %s, Waypoints: %d)", 
+      tostring(self.Bomber ~= nil), 
+      tostring(self.Bomber and self.Bomber.Route ~= nil),
+      self.Bomber and self.Bomber.Route and #self.Bomber.Route or 0)
+    return {blocked = false, message = "No route to analyze"}
+  end
+  
+  if not self.Bomber.SAMRouter then
+    BOMBER_LOGGER:Warn("THREAT", "Pre-spawn analysis: SAM router not initialized")
+    return {blocked = false, message = "SAM router not initialized"}
+  end
+  
+  BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: Prerequisites met - scanning for SAMs...")
+  
+  -- Get all SAMs in theater via MOOSE detection system  
+  local samThreats = {}
+  local enemyCoalition = self.Coalition == coalition.side.BLUE and coalition.side.RED or coalition.side.BLUE
+  
+  BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: Bomber coalition=%d, scanning for enemy coalition=%d", 
+    self.Coalition, enemyCoalition)
+  
+  -- Create set and filter for enemy ground units (using same approach as runtime threat scanner)
+  local detectionSets = SET_GROUP:New()
+    :FilterCoalitions(enemyCoalition)
+    :FilterCategories("ground")
+    :FilterOnce()
+  
+  local groupCount = detectionSets:Count()
+  BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: Filtered set contains %d enemy ground groups", groupCount)
+  
+  detectionSets:ForEachGroup(function(group)
+    if group and group:IsAlive() then
+      local groupName = group:GetName()
+      
+      -- Check first unit for SAM attributes (same method as runtime scanner)
+      local unit = group:GetUnit(1)
+      if unit and unit:IsAlive() then
+        local hasSAM = unit:HasAttribute("SAM")
+        local hasAD = unit:HasAttribute("Air Defence")
+        local unitType = unit:GetTypeName()
+        
+        if hasSAM or hasAD then
+          -- This is a SAM group - identify the SAM type using the threat manager's identification logic
+          BOMBER_LOGGER:Debug("THREAT", "Pre-spawn: Attempting to identify SAM/AD unit '%s'", unitType)
+          
+          local samData = BOMBER_THREAT_MANAGER:_IdentifySAM(unitType)
+          
+          BOMBER_LOGGER:Debug("THREAT", "Pre-spawn: Identification result for '%s': %s", 
+            unitType, samData and samData.name or "nil")
+          
+          -- Accept all SAM data including Unknown SAMs (they still pose a threat)
+          if samData then
+            local threatId = group:GetName()
+            samThreats[threatId] = {
+              Type = BOMBER_THREAT_MANAGER.ThreatType.SAM,
+              Group = group,
+              SAMType = unitType,
+              SAMData = samData
+            }
+            BOMBER_LOGGER:Info("THREAT", "Pre-spawn SAM detected: %s (%s = %s)", threatId, unitType, samData.name)
+          else
+            BOMBER_LOGGER:Debug("THREAT", "Pre-spawn: SAM/AD unit '%s' not identified (group: %s)", unitType, groupName)
+          end
+        end
+      end
+    end
+  end)
+  
+  BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: Found %d SAM group(s) in theater", 
+    self:_CountTableEntries(samThreats))
+  
+  if not next(samThreats) then
+    BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: No SAMs found - mission clear to launch")
+    return {blocked = false, message = "No SAM threats detected in theater"}
+  end
+  
+  BOMBER_LOGGER:Info("THREAT", "Pre-spawn analysis: Analyzing %d route legs for SAM threats", #self.Bomber.Route - 1)
+  
+  -- Analyze each major leg of the route and collect reroute needs
+  local allThreats = {}
+  local hasBlockingThreats = false
+  local routeModifications = {} -- Track which legs need corridor waypoints inserted
+  
+  for i = 1, #self.Bomber.Route - 1 do
+    local fromWP = self.Bomber.Route[i]
+    local toWP = self.Bomber.Route[i + 1]
+    
+    if fromWP and toWP and fromWP.x and toWP.x then
+      local fromCoord = COORDINATE:New(fromWP.x, fromWP.alt or 0, fromWP.y)
+      local toCoord = COORDINATE:New(toWP.x, toWP.alt or 0, toWP.y)
+      
+      BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: Checking route leg %d->%d", i, i+1)
+      
+      local analysis = self.Bomber.SAMRouter:AnalyzeRoute(fromCoord, toCoord, samThreats)
+      
+      BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: Leg %d result - Safe: %s, Threats: %d, Corridors: %d, Action: %s", 
+        i, tostring(analysis.isSafe), #analysis.threats, #analysis.corridors, analysis.recommendation.action or "NONE")
+      
+      if not analysis.isSafe and #analysis.threats > 0 then
+        -- Record threats for reporting
+        for _, threat in ipairs(analysis.threats) do
+          table.insert(allThreats, threat)
+        end
+        
+        -- Check if we found safe corridors
+        if #analysis.corridors > 0 then
+          -- Best corridor is first (sorted by distance)
+          local bestCorridor = analysis.corridors[1]
+          BOMBER_LOGGER:Info("THREAT", "Pre-spawn: Found safe corridor for leg %d->%d (+%.1f km detour)", 
+            i, i+1, bestCorridor.detourDistance / 1000)
+          
+          -- Store corridor for route modification
+          table.insert(routeModifications, {
+            afterWaypointIndex = i,
+            corridorWaypoints = bestCorridor.waypoints,
+            originalTo = toWP
+          })
+        else
+          -- No corridor found - this is a blocking threat
+          BOMBER_LOGGER:Warn("THREAT", "Pre-spawn: No safe corridor found for leg %d->%d", i, i+1)
+          hasBlockingThreats = true
+        end
+      end
+    end
+  end
+  
+  -- If we have route modifications (found corridors), apply them to the route
+  if #routeModifications > 0 and not hasBlockingThreats then
+    BOMBER_LOGGER:Info("THREAT", "Pre-spawn: Applying %d corridor route modification(s)", #routeModifications)
+    local newRoute = self:_ApplyCorridorModifications(self.Bomber.Route, routeModifications)
+    if newRoute then
+      self.Bomber.Route = newRoute
+      BOMBER_LOGGER:Info("THREAT", "Pre-spawn: Route modified - now %d waypoints (was %d)", 
+        #self.Bomber.Route, #self.Bomber.Route - #routeModifications)
+    end
+  end
+  
+  if #allThreats == 0 then
+    return {blocked = false, message = "Route clear of SAM threats"}
+  end
+  
+  -- Build threat report
+  local message = self:_BuildSAMThreatReport(allThreats, hasBlockingThreats, #routeModifications)
+  
+  return {
+    blocked = hasBlockingThreats,
+    threats = allThreats,
+    corridorsApplied = #routeModifications,
+    message = message
+  }
+end
+
+--- Apply corridor waypoints to route, replacing threatened legs
+-- @param #BOMBER_MISSION self
+-- @param #table originalRoute Original route waypoint table
+-- @param #table modifications Array of corridor modifications
+-- @return #table New route with corridor waypoints inserted
+function BOMBER_MISSION:_ApplyCorridorModifications(originalRoute, modifications)
+  -- Sort modifications by waypoint index (reverse order to maintain indices)
+  table.sort(modifications, function(a, b) return a.afterWaypointIndex > b.afterWaypointIndex end)
+  
+  local newRoute = {}
+  
+  -- Copy original route
+  for i, wp in ipairs(originalRoute) do
+    table.insert(newRoute, wp)
+  end
+  
+  -- Apply each corridor modification
+  for _, mod in ipairs(modifications) do
+    local insertAt = mod.afterWaypointIndex
+    
+    -- Build corridor waypoints in proper DCS waypoint format
+    local corridorWaypoints = {}
+    for _, coord in ipairs(mod.corridorWaypoints) do
+      local wp = {
+        x = coord.x,
+        y = coord.z,
+        alt = originalRoute[insertAt].alt, -- Use same altitude as source waypoint
+        type = "Turning Point",
+        action = "Turning Point",
+        speed = originalRoute[insertAt].speed,
+        speed_locked = true,
+        task = {id = "ComboTask", params = {tasks = {}}}
+      }
+      table.insert(corridorWaypoints, wp)
+    end
+    
+    -- Insert corridor waypoints after the source waypoint
+    for i = #corridorWaypoints, 1, -1 do
+      table.insert(newRoute, insertAt + 1, corridorWaypoints[i])
+    end
+    
+    BOMBER_LOGGER:Debug("THREAT", "Pre-spawn: Inserted %d corridor waypoint(s) after waypoint %d", 
+      #corridorWaypoints, insertAt)
+  end
+  
+  return newRoute
+end
+
+--- Build formatted SAM threat report message
+-- @param #BOMBER_MISSION self
+-- @param #table threats List of SAM threats
+-- @param #boolean isBlocking Whether threats block mission
+-- @param #number corridorsApplied Number of corridor modifications applied
+-- @return #string Formatted message
+function BOMBER_MISSION:_BuildSAMThreatReport(threats, isBlocking, corridorsApplied)
+  local msg = isBlocking and "❌ MISSION BLOCKED - SAM THREAT DETECTED\n\n" or "⚠️ SAM THREATS DETECTED ALONG ROUTE\n\n"
+  
+  msg = msg .. "Route Analysis:\n"
+  msg = msg .. string.format("├─ %d SAM site%s threaten flight path:\n", #threats, #threats > 1 and "s" or "")
+  
+  -- Group threats by type
+  local threatsByType = {}
+  for _, threat in ipairs(threats) do
+    local samType = threat.samType
+    if not threatsByType[samType] then
+      threatsByType[samType] = {count = 0, minDist = 999999}
+    end
+    threatsByType[samType].count = threatsByType[samType].count + 1
+    if threat.distanceToRoute < threatsByType[samType].minDist then
+      threatsByType[samType].minDist = threat.distanceToRoute
+    end
+  end
+  
+  local threatList = {}
+  for samType, data in pairs(threatsByType) do
+    table.insert(threatList, {type = samType, count = data.count, dist = data.minDist})
+  end
+  table.sort(threatList, function(a, b) return a.dist < b.dist end)
+  
+  for i, threat in ipairs(threatList) do
+    local distKm = math.floor(threat.dist / 1000)
+    local icon = threat.dist < 15000 and "⚠️ CRITICAL" or (threat.dist < 30000 and "⚠️" or "")
+    if threat.count > 1 then
+      msg = msg .. string.format("│  ├─ %dx %s (%d km from route) %s\n", threat.count, threat.type, distKm, icon)
+    else
+      msg = msg .. string.format("│  ├─ %s (%d km from route) %s\n", threat.type, distKm, icon)
+    end
+  end
+  
+  if isBlocking then
+    msg = msg .. "│\n"
+    msg = msg .. "├─ No safe corridor found within detour limits\n"
+    msg = msg .. "│\n"
+    msg = msg .. "└─ RECOMMENDED ACTIONS:\n"
+    msg = msg .. "   • Add :FORCE to BOMBER1 marker to override (high risk)\n"
+    msg = msg .. "   • Request SEAD to suppress threats before launch\n"
+    msg = msg .. "   • Consider alternate target or higher altitude\n"
+    msg = msg .. "\n"
+    msg = msg .. string.format("To override: Change marker to \"%s:FORCE\"", self.BomberType)
+  elseif corridorsApplied and corridorsApplied > 0 then
+    msg = msg .. "│\n"
+    msg = msg .. string.format("├─ ✓ Safe corridors found and applied (%d route modification%s)\n", 
+      corridorsApplied, corridorsApplied > 1 and "s" or "")
+    msg = msg .. "│\n"
+    msg = msg .. "└─ MISSION LAUNCHING with SAM-avoiding route\n"
+    msg = msg .. "\n"
+    msg = msg .. "Route has been automatically adjusted to avoid SAM threats.\n"
+    msg = msg .. "Bomber will navigate through safe corridors between threat zones."
+  else
+    msg = msg .. "│\n"
+    msg = msg .. "└─ MISSION LAUNCHING - FORCE OVERRIDE ACTIVE\n"
+    msg = msg .. "\n"
+    msg = msg .. "CAUTION:\n"
+    msg = msg .. "• Flying through contested airspace\n"
+    msg = msg .. "• SEAD support recommended\n"
+    msg = msg .. "• Mission will abort if SAMs achieve radar lock\n"
+  end
+  
+  return msg
 end
 
 --- Get template name for bomber type
@@ -3977,7 +4445,7 @@ function BOMBER:New(templateName, missionData)
   -- Escort roster tracking with memory management
   self.EscortRoster = {}  -- Table of escort callsigns: {callsign = {unit, joinTime, lastSeen, classification, details, positionHistory}}
   self.LastKnownEscorts = {}  -- List of callsigns we've confirmed as escorts (preserved when they leave)
-  self.MaxRosterSize = 20  -- Prevent memory bloat - prune oldest entries beyond this
+  self.MaxRosterSize = 20  -- Memory management: Prevent unbounded growth - prune oldest entries beyond this limit
   self.LastHoldingAnnounce = 0  -- Track last holding announcement time
   self.LastGroundEscortRequirementTime = 0 -- Throttle "need X escorts" reminders on the ramp
   self.WaitingForEscortDeparture = false  -- Flag: detected ground escort, waiting for them to follow
@@ -4037,6 +4505,12 @@ function BOMBER:New(templateName, missionData)
   self.ThreatManager = nil
   self.ThreatManagerStarted = false
   self.LastCoordErrorTime = nil
+  
+  -- Initialize SAM router early for pre-spawn threat analysis
+  if BOMBER_ESCORT_CONFIG.EnableSAMAvoidance then
+    self.SAMRouter = BOMBER_SAM_AVOIDANCE_ROUTER:New(self)
+    BOMBER_LOGGER:Debug("THREAT", "SAM avoidance router initialized during BOMBER:New()")
+  end
   
   return self
 end
@@ -4208,8 +4682,13 @@ function BOMBER:_InitializeOperationalSystems()
   self.ThreatManagerStarted = false
 
   if BOMBER_ESCORT_CONFIG.EnableSAMAvoidance then
-    self.SAMRouter = BOMBER_SAM_AVOIDANCE_ROUTER:New(self)
-    BOMBER_LOGGER:Info("THREAT", "%s: SAM avoidance router initialized", self.Callsign)
+    -- Initialize SAM router if not already created (may have been created early for pre-spawn analysis)
+    if not self.SAMRouter then
+      self.SAMRouter = BOMBER_SAM_AVOIDANCE_ROUTER:New(self)
+      BOMBER_LOGGER:Info("THREAT", "%s: SAM avoidance router initialized", self.Callsign)
+    else
+      BOMBER_LOGGER:Debug("THREAT", "%s: SAM router already initialized (pre-spawn analysis)", self.Callsign)
+    end
 
     local rerouteInterval = BOMBER_ESCORT_CONFIG.SAMRerouteCheckInterval or 15
     self.SAMRerouteScheduler = SCHEDULER:New(nil,
@@ -4239,12 +4718,14 @@ function BOMBER:_InitializeOperationalSystems()
 
   self:_SetupEventHandlers()
 
-  self.Group:OptionROEWeaponFree()
+  -- ROE: Weapon Hold prevents bombers from diverting to attack SAMs or other targets
+  -- They will only attack their assigned bombing targets
+  self.Group:OptionROEHoldFire()
   self.Group:OptionROTPassiveDefense()
   self.Group:OptionAlarmStateGreen()
   self.Group:OptionRTBAmmo(true)
 
-  BOMBER_LOGGER:Info("SPAWN", "%s: ROE=WEAPONS FREE, Alarm=GREEN, RTB on winchester=ON", self.Callsign)
+  BOMBER_LOGGER:Info("SPAWN", "%s: ROE=HOLD FIRE, Alarm=GREEN, RTB on winchester=ON", self.Callsign)
 
   if self.Route and #self.Route > 0 then
     BOMBER_LOGGER:Info("SPAWN", "%s: Route prepared, checking escort requirements", self.Callsign)
@@ -6318,7 +6799,7 @@ function BOMBER:_UpdateEscortRoster(currentEscorts)
       self.EscortRoster[callsign].classification = classification
       self.EscortRoster[callsign].details = details
       
-      -- Update position history (keep last 10 positions for tracking)
+      -- Memory management: Update position history (keep last 10 positions for tracking)
       if not self.EscortRoster[callsign].positionHistory then
         self.EscortRoster[callsign].positionHistory = {}
       end
@@ -6329,7 +6810,7 @@ function BOMBER:_UpdateEscortRoster(currentEscorts)
           coord = coord, 
           heading = details.heading or 0
         })
-        -- Keep only recent history
+        -- Prune to keep only recent history (prevent unbounded growth)
         if #self.EscortRoster[callsign].positionHistory > 10 then
           table.remove(self.EscortRoster[callsign].positionHistory, 1)
         end
@@ -6378,7 +6859,7 @@ function BOMBER:_UpdateEscortRoster(currentEscorts)
     BOMBER_LOGGER:Info("ESCORT", "%s: Escorts left: %s", self.Callsign, leftList)
   end
   
-  -- Prune roster
+  -- Memory management: Prune roster to prevent unbounded growth
   self:_PruneEscortRoster()
 end
 
@@ -6391,6 +6872,7 @@ function BOMBER:_CrewCallout(calloutType, message, cooldown)
   cooldown = cooldown or 30
   local currentTime = timer.getTime()
   
+  -- Memory management: Initialize callout tracking table if needed
   if not self.LastCrewCalloutTime then
     self.LastCrewCalloutTime = {}
   end
@@ -6399,6 +6881,27 @@ function BOMBER:_CrewCallout(calloutType, message, cooldown)
   if currentTime - lastTime >= cooldown then
     self:_BroadcastMessage(message)
     self.LastCrewCalloutTime[calloutType] = currentTime
+    
+    -- Memory management: Prune old callout types (keep only last 20 types)
+    local calloutCount = 0
+    for _ in pairs(self.LastCrewCalloutTime) do
+      calloutCount = calloutCount + 1
+    end
+    
+    if calloutCount > 20 then
+      -- Build sorted array by time
+      local sortedCallouts = {}
+      for cType, cTime in pairs(self.LastCrewCalloutTime) do
+        table.insert(sortedCallouts, {type = cType, time = cTime})
+      end
+      table.sort(sortedCallouts, function(a, b) return a.time < b.time end)
+      
+      -- Remove oldest callout types beyond limit
+      local toRemove = calloutCount - 20
+      for i = 1, toRemove do
+        self.LastCrewCalloutTime[sortedCallouts[i].type] = nil
+      end
+    end
   end
 end
 
@@ -6585,12 +7088,13 @@ function BOMBER:_CrewAwarenessCallout(situation)
 end
 
 --- Prune escort roster to prevent memory bloat
+-- Removes stale entries (not seen in 10 minutes) and enforces maximum roster size
 -- @param #BOMBER self
 function BOMBER:_PruneEscortRoster()
   local currentTime = timer.getTime()
   local toRemove = {}
   
-  -- Mark entries for removal if not seen in 10 minutes
+  -- Memory management: Mark entries for removal if not seen in 10 minutes
   for callsign, data in pairs(self.EscortRoster) do
     local timeSinceLastSeen = currentTime - data.lastSeen
     if timeSinceLastSeen > 600 then  -- 10 minutes
@@ -6604,7 +7108,7 @@ function BOMBER:_PruneEscortRoster()
     self.EscortRoster[callsign] = nil
   end
   
-  -- If roster is still too large, remove oldest entries
+  -- Memory management: If roster is still too large, remove oldest entries
   local rosterSize = 0
   for _ in pairs(self.EscortRoster) do
     rosterSize = rosterSize + 1
@@ -7398,6 +7902,14 @@ end
 --- Check if SAM reroute is needed and execute if necessary
 -- @param #BOMBER self
 function BOMBER:_CheckSAMReroute()
+  -- DISABLED: Runtime rerouting doesn't work with DCS waypoint system
+  -- All SAM avoidance is handled during pre-spawn route planning in BOMBER_MISSION:_AnalyzePlannedRoute()
+  -- This function is kept for future enhancements but does nothing
+  return
+end
+
+--[[ DISABLED RUNTIME REROUTING CODE - Kept for reference
+function BOMBER:_CheckSAMReroute_DISABLED()
   BOMBER_LOGGER:Debug("THREAT", "%s: _CheckSAMReroute() called", self.Callsign or "UNKNOWN")
   
   if not self.SAMRouter or not self.ThreatManager then
@@ -7466,8 +7978,16 @@ function BOMBER:_CheckSAMReroute()
   -- Get active SAM threats
   local samThreats = self.ThreatManager:GetActiveThreats(BOMBER_THREAT_MANAGER.ThreatType.SAM)
   
+  -- Count threats properly (samThreats is a hash table, not an array)
+  local threatCount = 0
+  if samThreats then
+    for _ in pairs(samThreats) do
+      threatCount = threatCount + 1
+    end
+  end
+  
   BOMBER_LOGGER:Debug("THREAT", "%s: _CheckSAMReroute() found %d active SAM threats", 
-    self.Callsign, samThreats and #samThreats or 0)
+    self.Callsign, threatCount)
   
   if not samThreats or not next(samThreats) then
     -- No SAM threats, clear route
@@ -7498,6 +8018,7 @@ function BOMBER:_CheckSAMReroute()
     self:Abort()
   end
 end
+--]] -- End of disabled runtime rerouting code
 
 --- Apply SAM detour route to current flight plan
 -- @param #BOMBER self
@@ -7561,7 +8082,7 @@ end
 -- @param #BOMBER self
 -- @param #table threatData Threat information
 function BOMBER:OnThreatCleared(threatData)
-  -- Clear SAM warning ranges for this specific threat
+  -- Memory management: Clear SAM warning ranges for this specific threat
   if threatData.Type == BOMBER_THREAT_MANAGER.ThreatType.SAM then
     local threatId = threatData.Group:GetName()
     if self.SAMWarningRanges and self.SAMWarningRanges[threatId] then
@@ -8544,7 +9065,7 @@ function BOMBER:onenterAborting()
   end
   
   if rtbAirbase then
-    BOMBER_LOGGER:Info("RTB", "%s: Commanding land at %s", self.Callsign, rtbAirbase:GetName())
+    BOMBER_LOGGER:Info("RTB", "%s: Commanding RTB to %s", self.Callsign, rtbAirbase:GetName())
 
     -- Check if group is still alive before issuing commands
     if not self.Group or not self.Group:IsAlive() then
@@ -8552,56 +9073,34 @@ function BOMBER:onenterAborting()
       return
     end
     
-    -- Build RTB route with proper waypoints for landing
-    local currentCoord = self.Group:GetCoordinate()
-    local rtbCoord = rtbAirbase:GetCoordinate()
-    local rtbAltitudeFeet = 5000  -- Approach altitude
+    -- STRATEGY: Use DCS native RTB command - this is what actually works
+    -- The AI won't accept new routes while on mission, but WILL respond to RTB command
     
-    -- Create RTB waypoints: current position -> approach point -> airbase
-    local wp1 = currentCoord:WaypointAir(
-      "BARO",
-      COORDINATE.WaypointType.TurningPoint,
-      COORDINATE.WaypointAction.TurningPoint,
-      self.CruiseSpeed or 400,
-      true
-    )
+    BOMBER_LOGGER:Debug("RTB", "%s: Issuing DCS controller RTB command", self.Callsign)
     
-    -- Approach waypoint 10nm out from airbase
-    local approachCoord = rtbCoord:Translate(UTILS.NMToMeters(10), rtbAirbase:GetHeading())
-    approachCoord:SetAltitude(UTILS.FeetToMeters(rtbAltitudeFeet))
-    local wp2 = approachCoord:WaypointAir(
-      "BARO",
-      COORDINATE.WaypointType.TurningPoint,
-      COORDINATE.WaypointAction.TurningPoint,
-      250,  -- Slower approach speed
-      true
-    )
-    
-    -- Landing waypoint at airbase
-    local wp3 = rtbCoord:WaypointAirLanding(
-      self.CruiseSpeed or 400,
-      rtbAirbase
-    )
-    
-    self.RTBRoute = {wp1, wp2, wp3}
-    
-    -- Route the group
-    self.Group:Route(self.RTBRoute, 1)
-    BOMBER_LOGGER:Info("RTB", "%s: RTB route with %d waypoints issued to %s", 
-      self.Callsign, #self.RTBRoute, rtbAirbase:GetName())
-    
-    -- Start RTB monitoring
-    self:_StartRTBMonitor()
+    local controller = self.Group:GetController()
+    if controller then
+      -- Use DCS native RTB command - tells AI to return to spawn airbase
+      controller:setCommand({
+        id = 'RTB',
+        params = {}
+      })
+      
+      BOMBER_LOGGER:Info("RTB", "%s: DCS RTB command issued - AI will navigate autonomously to %s", 
+        self.Callsign, rtbAirbase:GetName())
+      
+      -- Start RTB monitoring and transition to RTB state
+      self:_StartRTBMonitor()
+      self:__ReturnToBase(1)
+      
+      -- Mark mission as failed
+      self.MissionFailed = true
+    else
+      BOMBER_LOGGER:Error("RTB", "%s: Failed to get controller for RTB command", self.Callsign)
+    end
   else
     BOMBER_LOGGER:Error("RTB", "%s: CRITICAL - Cannot RTB without airbase!", self.Callsign)
   end
-  
-  -- Transition to RTB state
-  BOMBER_LOGGER:Info("FSM", "%s: Triggering ReturnToBase state transition in 2 seconds", self.Callsign)
-  self:__ReturnToBase(2)
-  
-  -- Mark mission as failed, but don't complete it yet - wait until landed
-  self.MissionFailed = true
 end
 
 --- FSM State: RTB
@@ -8759,9 +9258,10 @@ function BOMBER:_ScrubMission(reason)
 end
 
 --- Clean up bomber mission
+-- Stops all schedulers and clears tracked data to prevent memory leaks
 -- @param #BOMBER self
 function BOMBER:Destroy()
-  -- Stop holding check if active
+  -- Memory management: Stop holding check if active
   self:_CancelLandingFailureDespawn("destroy")
   self:_DestroyPlaceholderGroup("destroy")
   if self.HoldingCheck then
@@ -8769,6 +9269,7 @@ function BOMBER:Destroy()
     self.HoldingCheck = nil
   end
   
+  -- Memory management: Stop all monitoring schedulers
   if self.EngineStartMonitor then
     self.EngineStartMonitor:Stop()
     self.EngineStartMonitor = nil
@@ -8800,7 +9301,7 @@ function BOMBER:Destroy()
     self.ThreatManagerStarted = false
   end
   
-  -- Stop SAM-related schedulers
+  -- Memory management: Stop SAM-related schedulers
   if self.SAMStatusScheduler then
     self.SAMStatusScheduler:Stop()
     self.SAMStatusScheduler = nil
@@ -8811,21 +9312,29 @@ function BOMBER:Destroy()
     self.SAMRerouteScheduler = nil
   end
   
-  -- Clear SAM router and tracking data
+  -- Memory management: Clear SAM router and tracking data
   if self.SAMRouter then
     self.SAMRouter.ActiveDetours = nil
     self.SAMRouter.RouteHistory = nil
     self.SAMRouter = nil
   end
   
-  -- Clear SAM warning tracking
+  -- Memory management: Clear SAM warning tracking
   if self.SAMWarningRanges then
     self.SAMWarningRanges = nil
   end
   
-  -- Clear escort roster to free memory
+  -- Memory management: Clear escort roster and tracking tables
   if self.EscortRoster then
     self.EscortRoster = {}
+  end
+  
+  if self.LastKnownEscorts then
+    self.LastKnownEscorts = {}
+  end
+  
+  if self.LastCrewCalloutTime then
+    self.LastCrewCalloutTime = {}
   end
   
   self:_BroadcastMessage(string.format("%s: Mission terminated.", self.Callsign))

@@ -6,6 +6,22 @@ A comprehensive player-escort AI bomber mission system for DCS World using the M
 
 This system allows players to dynamically create bomber missions using F10 map markers, then escort those AI bombers to their targets. The bombers exhibit intelligent behavior based on escort presence, threats, and mission status.
 
+
+ 
+
+ODD BEHAVIOR NOTES:
+Learned through many painful hours of testing.. :(
+
+ 1. Despite the "Features" described below - DCS AI is often going to do what it's going to do. At the time of this writing 11/25/2025 DCS AI will create it's own route if there is a target waypoint in the mix so that it can figure out the geometry of the attack vectors. (so the excuse goes) this can result in some cases the bombers ignoring your waypoints and only focusing in on the target waypoint. Creating it's own route and ignore all your waypoints. I've left these features as part of the system in the hopes that ED eventually gives us more control over spawned objects.
+
+ 2. Multiple Bomber Passes: Again, I spent countless hours trying to get bombers to drop their loads on the first pass, but again, DCS ai really doesn't like being told what to do after they've been spawned and they are going to do what they are going to do. In the case of bomber dropping their bombs, they will likely make 2 passes - dropping bombs on the 2nd pass. The rational they say is for the bombers to figure out geomtry for the drop.
+
+ So based on those 2 cavets a simple spawn point and attack points are about as much control as we can get. It will drop on multiple targets, just can't perdict how or when.
+
+
+
+
+
 ## Features Implemented
 
 ### ✅ Phase 1 - Core Framework (COMPLETE)
