@@ -203,21 +203,17 @@ BOMBER_MARKER = {
 
 --- Marker configuration
 BOMBER_MARKER.Config = {
-  waypointPrefix = "BOMBER",        -- Legacy: Waypoint marker prefix (BOMBER1, BOMBER2, etc.)
-  targetPrefix = "TARGET",          -- Legacy: Target marker prefix (TARGET1)
-  respawnPrefix = "RESPAWN",        -- Respawn marker prefix (RESPAWN1)
-  egressPrefix = "EGRESS",          -- Legacy: Egress waypoint prefix (EGRESS1, EGRESS2, etc.)
-  rtbPrefix = "RTB",                -- Legacy: RTB marker prefix (RTB1)
+  respawnPrefix = "RESPAWN",           -- Respawn marker prefix (RESPAWN1)
   deleteMarkersAfterUse = BOMBER_ESCORT_CONFIG.DeleteMarkersAfterUse,
-  minWaypoints = 1,                 -- Minimum waypoints
-  maxWaypoints = 10,                -- Maximum route waypoints
+  minWaypoints = 1,                    -- Minimum waypoints
+  maxWaypoints = 10,                   -- Maximum route waypoints
   AllowAirSpawnFallback = BOMBER_ESCORT_CONFIG.AllowAirSpawnFallback,
   
-  -- New multi-mission marker keywords
-  spawnKeywords = {"SPAWN", "START"},  -- Keywords for spawn point
-  waypointKeyword = "WP",              -- Waypoint keyword
-  targetKeyword = "TARGET",            -- Target keyword
-  rtbKeyword = "RTB",                  -- RTB keyword
+  -- Multi-mission marker keywords
+  spawnKeywords = {"SPAWN", "START"},  -- Keywords for spawn point (BOMBER1:SPAWN or BOMBER1:START)
+  waypointKeyword = "WP",              -- Waypoint keyword (BOMBER1:WP1, BOMBER1:WP2, etc.)
+  targetKeyword = "TARGET",            -- Target keyword (BOMBER1:TARGET1, etc.)
+  rtbKeyword = "RTB",                  -- RTB keyword (BOMBER1:RTB)
 }
 
 ---
@@ -409,21 +405,29 @@ function BOMBER_MARKER:New()
 end
 
 --- Parse waypoint marker text for mission parameters
--- Format: BOMBER1:[Type]:[Size]:FL[Alt]:[Speed]
--- Example: BOMBER1:B-52H:4:FL250:350
+-- Supports both formats:
+--   Legacy: BOMBER1:B-52H:4:FL250:350
+--   New: BOMBER1:SPAWN:B-52H:4:FL250:350:FORCE
 -- @param #BOMBER_MARKER self
 -- @param #string markerText The text from the map marker
 -- @param #number defaultAlt Default altitude if not specified (feet)
 -- @param #number defaultSpeed Default speed if not specified (knots)
--- @return #table Parsed parameters: {type, size, altitude, speed, force, originalText}
+-- @return #table Parsed parameters: {type, size, altitude, speed, force, scramble, originalText}
 function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed)
-  -- Check for FORCE flag first (case-insensitive, anywhere in string)
+  -- Check for FORCE flag (case-insensitive, anywhere in string)
   local forceOverride = string.find(string.upper(markerText), ":FORCE") ~= nil
   
-  -- Remove :FORCE from text before parsing other params (case-insensitive)
-  local cleanText = string.gsub(markerText, ":FORCE", "")
+  -- Check for SCRAMBLE flag
+  local scrambleLaunch = string.find(string.upper(markerText), ":SCRAMBLE") ~= nil
+  
+  -- Remove flags from text before parsing other params
+  local cleanText = markerText
+  cleanText = string.gsub(cleanText, ":FORCE", "")
   cleanText = string.gsub(cleanText, ":force", "")
   cleanText = string.gsub(cleanText, ":Force", "")
+  cleanText = string.gsub(cleanText, ":SCRAMBLE", "")
+  cleanText = string.gsub(cleanText, ":scramble", "")
+  cleanText = string.gsub(cleanText, ":Scramble", "")
   
   local result = {
     type = nil,
@@ -431,6 +435,7 @@ function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed
     altitude = defaultAlt or BOMBER_ESCORT_CONFIG.DefaultAltitude,
     speed = defaultSpeed or BOMBER_ESCORT_CONFIG.DefaultSpeed,
     force = forceOverride,
+    scramble = scrambleLaunch,
     originalText = markerText
   }
   
@@ -440,22 +445,37 @@ function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed
     table.insert(parts, (string.gsub(part, "^%s*(.-)%s*$", "%1"))) -- Trim whitespace
   end
   
-  -- Parse each part (skip first part which is BOMBER1, BOMBER2, etc.)
-  if #parts >= 2 and parts[2] ~= "" then result.type = parts[2] end
-  if #parts >= 3 and parts[3] ~= "" then 
-    result.size = tonumber(parts[3])
+  -- Detect format: check if part 2 is SPAWN/START keyword
+  local startIndex = 2
+  local upperPart2 = parts[2] and string.upper(parts[2]) or ""
+  for _, keyword in ipairs(self.Config.spawnKeywords) do
+    if upperPart2 == keyword then
+      startIndex = 3 -- Skip the SPAWN/START keyword
+      break
+    end
   end
-  if #parts >= 4 then
+  
+  -- Parse parameters starting from detected index
+  -- Format: [MISSIONID]:[SPAWN/START]:[Type]:[Size]:[Alt]:[Speed]
+  if #parts >= startIndex and parts[startIndex] ~= "" then 
+    result.type = parts[startIndex] 
+  end
+  if #parts >= startIndex + 1 and parts[startIndex + 1] ~= "" then 
+    result.size = tonumber(parts[startIndex + 1])
+  end
+  if #parts >= startIndex + 2 then
     -- Parse FL format or raw number
-    local altStr = string.upper(parts[4])
+    local altStr = string.upper(parts[startIndex + 2])
     local flNum = string.match(altStr, "FL(%d+)")
     if flNum then
       result.altitude = tonumber(flNum) * 100
     else
-      result.altitude = tonumber(parts[4]) or defaultAlt
+      result.altitude = tonumber(parts[startIndex + 2]) or defaultAlt
     end
   end
-  if #parts >= 5 then result.speed = tonumber(parts[5]) or defaultSpeed end
+  if #parts >= startIndex + 3 then 
+    result.speed = tonumber(parts[startIndex + 3]) or defaultSpeed 
+  end
   
   return result
 end
@@ -494,16 +514,14 @@ function BOMBER_MARKER:_ParseTargetMarker(markerText)
   return result
 end
 
---- Scan map for waypoint markers matching bomber pattern
+--- Scan for new multi-mission marker format (BOMBER1:SPAWN:B-1B, BOMBER1:WP1, BOMBER1:TARGET1, etc.)
+-- Groups markers by mission ID and returns organized mission data
 -- @param #BOMBER_MARKER self
--- @param #string prefix The marker prefix to search for (e.g., "BOMBER", "TARGET")
--- @return #table Array of waypoint data sorted by sequence number
--- @return #table Array of marker IDs for cleanup
-function BOMBER_MARKER:_ScanForWaypointMarkers(prefix)
-  local waypoints = {}
-  local markerIds = {}
+-- @return #table missions Table of missions keyed by mission ID (e.g., "BOMBER1", "BOMBER2")
+function BOMBER_MARKER:_ScanForMultiMissionMarkers()
+  local missions = {}
   
-  -- Iterate through all possible marker IDs (DCS markers are numbered)
+  -- Scan all markers
   for i = 1, 1000 do
     local markerData = world.getMarkPanels()
     if markerData and markerData[i] then
@@ -511,203 +529,211 @@ function BOMBER_MARKER:_ScanForWaypointMarkers(prefix)
       local markerText = marker.text
       
       if markerText then
-        -- Check if marker matches pattern: PREFIX + number
         local upperText = string.upper(markerText)
-        local upperPrefix = string.upper(prefix)
-        local sequence = string.match(upperText, "^" .. upperPrefix .. "(%d+)")
         
-        if sequence then
-          local seqNum = tonumber(sequence)
-          local pos = marker.pos
+        -- Parse marker format: MISSIONID:KEYWORD:PARAMS
+        -- Example: BOMBER1:SPAWN:B-1B or BOMBER2:WP1 or BOMBER1:TARGET1:RUNWAY:070
+        local parts = {}
+        for part in string.gmatch(markerText, "[^:]+") do
+          table.insert(parts, (string.gsub(part, "^%s*(.-)%s*$", "%1"))) -- Trim whitespace
+        end
+        
+        if #parts >= 2 then
+          local missionId = string.upper(parts[1])
+          local keyword = string.upper(parts[2])
           
-          table.insert(waypoints, {
-            sequence = seqNum,
-            coordinate = COORDINATE:NewFromVec3(pos),
-            markerId = marker.idx,
-            markerText = markerText,
-            coalition = marker.coalition or coalition.side.BLUE,
-            -- Parse target-specific parameters if this is a target marker
-            targetParams = prefix == self.Config.targetPrefix and self:_ParseTargetMarker(markerText) or nil
-          })
+          -- Check if this is a spawn marker
+          local isSpawn = false
+          for _, spawnKeyword in ipairs(self.Config.spawnKeywords) do
+            if keyword == spawnKeyword then
+              isSpawn = true
+              break
+            end
+          end
           
-          table.insert(markerIds, marker.idx)
+          -- Check for WP markers (WP1, WP2, etc.)
+          local wpNum = string.match(keyword, "^" .. self.Config.waypointKeyword .. "(%d+)$")
           
-          BOMBER_LOGGER:Debug("MARKER", "Found waypoint marker: %s at seq %d (ID: %d)", 
-            markerText, seqNum, marker.idx)
+          -- Check for TARGET markers (TARGET1, TARGET2, etc.)
+          local targetNum = string.match(keyword, "^" .. self.Config.targetKeyword .. "(%d+)$")
+          
+          -- Check for RTB marker
+          local isRTB = keyword == self.Config.rtbKeyword
+          
+          if isSpawn or wpNum or targetNum or isRTB then
+            -- Initialize mission structure if not exists
+            if not missions[missionId] then
+              missions[missionId] = {
+                id = missionId,
+                spawn = nil,
+                waypoints = {},
+                targets = {},
+                rtb = nil,
+                markerIds = {},
+                coalition = marker.coalition or coalition.side.BLUE
+              }
+            end
+            
+            local pos = marker.pos
+            local coord = COORDINATE:NewFromVec3(pos)
+            
+            -- Add marker ID for cleanup
+            table.insert(missions[missionId].markerIds, marker.idx)
+            
+            if isSpawn then
+              -- SPAWN marker: BOMBER1:SPAWN:B-1B:2:FL250:400:FORCE
+              missions[missionId].spawn = {
+                coordinate = coord,
+                markerId = marker.idx,
+                markerText = markerText,
+                params = self:_ParseWaypointMarker(markerText)
+              }
+              BOMBER_LOGGER:Debug("MARKER", "Found spawn marker for %s: %s", missionId, markerText)
+              
+            elseif wpNum then
+              -- Waypoint marker: BOMBER1:WP1
+              local sequence = tonumber(wpNum)
+              table.insert(missions[missionId].waypoints, {
+                sequence = sequence,
+                coordinate = coord,
+                markerId = marker.idx,
+                markerText = markerText
+              })
+              BOMBER_LOGGER:Debug("MARKER", "Found waypoint %d for %s: %s", sequence, missionId, markerText)
+              
+            elseif targetNum then
+              -- Target marker: BOMBER1:TARGET1:RUNWAY:070
+              local sequence = tonumber(targetNum)
+              table.insert(missions[missionId].targets, {
+                sequence = sequence,
+                coordinate = coord,
+                markerId = marker.idx,
+                markerText = markerText,
+                targetParams = self:_ParseTargetMarker(markerText)
+              })
+              BOMBER_LOGGER:Debug("MARKER", "Found target %d for %s: %s", sequence, missionId, markerText)
+              
+            elseif isRTB then
+              -- RTB marker: BOMBER1:RTB
+              missions[missionId].rtb = {
+                coordinate = coord,
+                markerId = marker.idx,
+                markerText = markerText
+              }
+              BOMBER_LOGGER:Debug("MARKER", "Found RTB marker for %s: %s", missionId, markerText)
+            end
+          end
         end
       end
     end
   end
   
-  -- Sort by sequence number
-  table.sort(waypoints, function(a, b) return a.sequence < b.sequence end)
+  -- Sort waypoints and targets by sequence
+  for missionId, mission in pairs(missions) do
+    table.sort(mission.waypoints, function(a, b) return a.sequence < b.sequence end)
+    table.sort(mission.targets, function(a, b) return a.sequence < b.sequence end)
+  end
   
-  return waypoints, markerIds
+  return missions
 end
 
 --- Check for new map markers and auto-execute missions
+-- Format: MISSIONID:KEYWORD:PARAMS
+-- Examples: BOMBER1:SPAWN:B-1B, BOMBER1:WP1, BOMBER1:TARGET1:RUNWAY:070
 -- @param #BOMBER_MARKER self
 function BOMBER_MARKER:_CheckMarkers()
-  -- Scan for bomber waypoint markers
-  local bomberWaypoints, bomberMarkerIds = self:_ScanForWaypointMarkers(self.Config.waypointPrefix)
+  -- Scan for multi-mission format markers
+  local missions = self:_ScanForMultiMissionMarkers()
   
-  -- Scan for target markers
-  local targetWaypoints, targetMarkerIds = self:_ScanForWaypointMarkers(self.Config.targetPrefix)
-  
-  -- Scan for egress waypoint markers
-  local egressWaypoints, egressMarkerIds = self:_ScanForWaypointMarkers(self.Config.egressPrefix)
-  
-  -- Scan for RTB markers
-  local rtbWaypoints, rtbMarkerIds = self:_ScanForWaypointMarkers(self.Config.rtbPrefix)
-  
-  -- Provide feedback about what was found
-  local feedbackMsg = "[MAP] BOMBER MISSION MARKERS DETECTED:\n\n"
-  local hasBombers = #bomberWaypoints > 0
-  local hasTargets = #targetWaypoints > 0
-  
-  if hasBombers then
-    feedbackMsg = feedbackMsg .. string.format("[OK] BOMBER waypoints: %d found\n", #bomberWaypoints)
-    for _, wp in ipairs(bomberWaypoints) do
-      feedbackMsg = feedbackMsg .. string.format("  - %s (seq %d)\n", wp.markerText, wp.sequence)
-    end
-  else
-    feedbackMsg = feedbackMsg .. "[X] BOMBER waypoints: NONE found\n"
-    feedbackMsg = feedbackMsg .. "  -> Place BOMBER1:[Type]:[Size]:FL[Alt]:[Speed]\n"
-  end
-  
-  feedbackMsg = feedbackMsg .. "\n"
-  
-  if hasTargets then
-    feedbackMsg = feedbackMsg .. string.format("[OK] TARGET markers: %d found\n", #targetWaypoints)
-    for _, wp in ipairs(targetWaypoints) do
-      feedbackMsg = feedbackMsg .. string.format("  - %s (seq %d)\n", wp.markerText, wp.sequence)
-    end
-  else
-    feedbackMsg = feedbackMsg .. "[X] TARGET markers: NONE found\n"
-    feedbackMsg = feedbackMsg .. "  -> Place TARGET1:[AttackType]:[Heading]\n"
-  end
-  
-  if #egressWaypoints > 0 then
-    feedbackMsg = feedbackMsg .. string.format("\n[OK] EGRESS waypoints: %d found (optional)\n", #egressWaypoints)
-  end
-  
-  if #rtbWaypoints > 0 then
-    feedbackMsg = feedbackMsg .. string.format("[OK] RTB markers: %d found (optional)\n", #rtbWaypoints)
-  end
-  
-  -- Check if we have minimum required markers for mission execution
-  if not hasBombers or not hasTargets then
-    feedbackMsg = feedbackMsg .. "\n[!] INCOMPLETE MISSION\n"
-    feedbackMsg = feedbackMsg .. "Both BOMBER1 and TARGET1 are required.\n"
-    feedbackMsg = feedbackMsg .. "Add missing markers and retry F10 -> Launch Mission."
-    
-    -- Send feedback to all coalitions with markers
-    local coalitionsWithMarkers = {}
-    for _, wp in ipairs(bomberWaypoints) do
-      coalitionsWithMarkers[wp.coalition] = true
-    end
-    for _, wp in ipairs(targetWaypoints) do
-      coalitionsWithMarkers[wp.coalition] = true
-    end
-    
-    for coalitionSide, _ in pairs(coalitionsWithMarkers) do
-      MESSAGE:New(feedbackMsg, 20):ToCoalition(coalitionSide)
-    end
-    
-    -- If no markers at all, send to blue by default
-    if not hasBombers and not hasTargets then
-      MESSAGE:New("[X] NO BOMBER MISSION MARKERS FOUND\n\nPlace BOMBER1 and TARGET1 markers on the F10 map, then use F10 -> Bomber Missions -> Launch Mission.", 15):ToBlue()
-    end
-    
-    return false
-  end
-  
-  feedbackMsg = feedbackMsg .. "\n[OK] MISSION COMPLETE - Validating and spawning...\n"
-  
-  -- Group by coalition
-  local missionsByCoalition = {}
-  
-  for _, bomberWp in ipairs(bomberWaypoints) do
-    local coalitionSide = bomberWp.coalition
-    
-    if not missionsByCoalition[coalitionSide] then
-      missionsByCoalition[coalitionSide] = {
-        bomberWaypoints = {},
-        targetWaypoints = {},
-        allMarkerIds = {}
-      }
-    end
-    
-    table.insert(missionsByCoalition[coalitionSide].bomberWaypoints, bomberWp)
-    table.insert(missionsByCoalition[coalitionSide].allMarkerIds, bomberWp.markerId)
-  end
-  
-  for _, targetWp in ipairs(targetWaypoints) do
-    local coalitionSide = targetWp.coalition
-    
-    if missionsByCoalition[coalitionSide] then
-      table.insert(missionsByCoalition[coalitionSide].targetWaypoints, targetWp)
-      table.insert(missionsByCoalition[coalitionSide].allMarkerIds, targetWp.markerId)
-    end
-  end
-  
-  for _, egressWp in ipairs(egressWaypoints) do
-    local coalitionSide = egressWp.coalition
-    
-    if missionsByCoalition[coalitionSide] then
-      if not missionsByCoalition[coalitionSide].egressWaypoints then
-        missionsByCoalition[coalitionSide].egressWaypoints = {}
-      end
-      table.insert(missionsByCoalition[coalitionSide].egressWaypoints, egressWp)
-      table.insert(missionsByCoalition[coalitionSide].allMarkerIds, egressWp.markerId)
-    end
-  end
-  
-  for _, rtbWp in ipairs(rtbWaypoints) do
-    local coalitionSide = rtbWp.coalition
-    
-    if missionsByCoalition[coalitionSide] then
-      if not missionsByCoalition[coalitionSide].rtbWaypoints then
-        missionsByCoalition[coalitionSide].rtbWaypoints = {}
-      end
-      table.insert(missionsByCoalition[coalitionSide].rtbWaypoints, rtbWp)
-      table.insert(missionsByCoalition[coalitionSide].allMarkerIds, rtbWp.markerId)
-    end
-  end
-  
-  -- Send initial feedback before detailed validation
-  for coalitionSide, _ in pairs(missionsByCoalition) do
-    MESSAGE:New(feedbackMsg, 15):ToCoalition(coalitionSide)
-  end
-  
-  -- Execute missions for each coalition that has complete marker set
-  for coalitionSide, missionData in pairs(missionsByCoalition) do
-    if #missionData.bomberWaypoints > 0 and #missionData.targetWaypoints > 0 then
-      self:_ExecuteMissionFromMarkers(coalitionSide, missionData)
-    end
-  end
-  
-  return true
+  -- Execute all found missions
+  return self:_ExecuteMultiMissions(missions)
 end
 
---- Execute a bomber mission from detected markers
+--- Execute multiple missions from new marker format
 -- @param #BOMBER_MARKER self
--- @param #number coalitionSide The coalition side
--- @param #table missionData Table containing bomberWaypoints, targetWaypoints, egressWaypoints, rtbWaypoints, allMarkerIds
-function BOMBER_MARKER:_ExecuteMissionFromMarkers(coalitionSide, missionData)
-  local bomberWaypoints = missionData.bomberWaypoints
-  local targetWaypoints = missionData.targetWaypoints
-  local egressWaypoints = missionData.egressWaypoints or {}
-  local rtbWaypoints = missionData.rtbWaypoints or {}
+-- @param #table missions Table of missions keyed by mission ID
+function BOMBER_MARKER:_ExecuteMultiMissions(missions)
+  local executedCount = 0
+  local feedbackMsgs = {}
   
-  -- Parse BOMBER1 marker for mission parameters
-  local firstWp = bomberWaypoints[1]
-  local params = self:_ParseWaypointMarker(firstWp.markerText)
+  for missionId, mission in pairs(missions) do
+    local feedbackMsg = string.format("[MAP] MISSION %s MARKERS:\n\n", missionId)
+    local hasSpawn = mission.spawn ~= nil
+    local hasTargets = #mission.targets > 0
+    local hasWaypoints = #mission.waypoints > 0
+    
+    if hasSpawn then
+      local params = mission.spawn.params
+      feedbackMsg = feedbackMsg .. string.format("[OK] SPAWN: %s\n", mission.spawn.markerText)
+      feedbackMsg = feedbackMsg .. string.format("  Type: %s, Size: %d, Alt: %dft, Speed: %dkts\n",
+        params.type or "Unknown", params.size or 1, params.altitude or 25000, params.speed or 400)
+    else
+      feedbackMsg = feedbackMsg .. "[X] SPAWN: NONE (required)\n"
+      feedbackMsg = feedbackMsg .. string.format("  -> Place %s:SPAWN:B-1B (or :START:B-1B)\n", missionId)
+    end
+    
+    if hasWaypoints then
+      feedbackMsg = feedbackMsg .. string.format("\n[OK] WAYPOINTS: %d found\n", #mission.waypoints)
+      for _, wp in ipairs(mission.waypoints) do
+        feedbackMsg = feedbackMsg .. string.format("  - %s\n", wp.markerText)
+      end
+    end
+    
+    if hasTargets then
+      feedbackMsg = feedbackMsg .. string.format("\n[OK] TARGETS: %d found\n", #mission.targets)
+      for _, tgt in ipairs(mission.targets) do
+        feedbackMsg = feedbackMsg .. string.format("  - %s\n", tgt.markerText)
+      end
+    else
+      feedbackMsg = feedbackMsg .. "\n[X] TARGETS: NONE (required)\n"
+      feedbackMsg = feedbackMsg .. string.format("  -> Place %s:TARGET1:RUNWAY:070\n", missionId)
+    end
+    
+    if mission.rtb then
+      feedbackMsg = feedbackMsg .. string.format("\n[OK] RTB: %s\n", mission.rtb.markerText)
+    end
+    
+    -- Store feedback for this coalition
+    if not feedbackMsgs[mission.coalition] then
+      feedbackMsgs[mission.coalition] = {}
+    end
+    table.insert(feedbackMsgs[mission.coalition], feedbackMsg)
+    
+    -- Execute if complete
+    if hasSpawn and hasTargets then
+      feedbackMsg = feedbackMsg .. "\n[!] LAUNCHING MISSION...\n"
+      self:_ExecuteSingleMission(mission)
+      executedCount = executedCount + 1
+    else
+      feedbackMsg = feedbackMsg .. "\n[!] INCOMPLETE - Add missing markers\n"
+    end
+    
+    -- Update stored feedback with completion status
+    feedbackMsgs[mission.coalition][#feedbackMsgs[mission.coalition]] = feedbackMsg
+  end
+  
+  -- Send feedback to each coalition
+  for coalitionSide, msgs in pairs(feedbackMsgs) do
+    local combinedMsg = table.concat(msgs, "\n" .. string.rep("-", 40) .. "\n\n")
+    MESSAGE:New(combinedMsg, 20):ToCoalition(coalitionSide)
+  end
+  
+  BOMBER_LOGGER:Info("MARKER", "Executed %d mission(s) from new format markers", executedCount)
+  return executedCount > 0
+end
+
+--- Execute a single mission from new marker format
+-- @param #BOMBER_MARKER self
+-- @param #table mission Mission data structure
+function BOMBER_MARKER:_ExecuteSingleMission(mission)
+  local params = mission.spawn.params
+  local bomberType = params.type or "B-52H"
+  local flightSize = params.size or 1
+  local coalition = mission.coalition
   
   -- Validate bomber type
-  local bomberType = params.type or "B-52H"
   if not BOMBER_PROFILE:Get(bomberType) then
-    self:_SendMessage(coalitionSide, string.format(
+    self:_SendMessage(coalition, string.format(
       "[X] INVALID BOMBER TYPE: %s\n\nAvailable types: %s", 
       bomberType, 
       table.concat(BOMBER_PROFILE:ListTypes(), ", ")
@@ -715,208 +741,88 @@ function BOMBER_MARKER:_ExecuteMissionFromMarkers(coalitionSide, missionData)
     return
   end
   
-  -- Check if template exists in mission
+  -- Check template exists
   if _BOMBER_AVAILABLE_TEMPLATES and not _BOMBER_AVAILABLE_TEMPLATES[bomberType] then
     local templateName = string.gsub(bomberType, "[-]", "")
     templateName = string.gsub(templateName, "MS$", "")
     templateName = "BOMBER_" .. string.upper(templateName)
     
-    self:_SendMessage(coalitionSide, string.format(
-      "[X] BOMBER TEMPLATE MISSING\n\n" ..
-      "Bomber Type: %s\n" ..
-      "Required Template: %s\n\n" ..
-      "MISSION MAKER: Add this to mission editor:\n" ..
-      "1. Place %s aircraft group\n" ..
-      "2. Name group: %s\n" ..
-      "3. Set Late Activation = TRUE\n" ..
-      "4. Set loadout (bombs)\n" ..
-      "5. Restart mission after adding",
-      bomberType, templateName, bomberType, templateName
-    ))
+    self:_SendMessage(coalition, string.format(
+      "[X] TEMPLATE MISSING: %s\n\nAdd bomber template to mission editor", templateName))
     return
   end
   
-  -- Get profile for defaults
-  local profile = BOMBER_PROFILE:Get(bomberType)
-  
-  -- Validate flight size (use profile default if not specified)
-  local flightSize = params.size or profile.DefaultFlightSize or 1
-  if flightSize < 1 or flightSize > 6 then
-    self:_SendMessage(coalitionSide, "INVALID FLIGHT SIZE: Must be 1-6 aircraft")
-    return
-  end
-  
-  -- Auto-detect airbase from marker position
+  -- Detect airbase from spawn marker
   local startAirbase = nil
-  
-  -- Find nearest airbase to BOMBER1 marker
-  local nearestAirbase = firstWp.coordinate:GetClosestAirbase(Airbase.Category.AIRDROME, coalitionSide)
+  local nearestAirbase = mission.spawn.coordinate:GetClosestAirbase(Airbase.Category.AIRDROME, coalition)
   if nearestAirbase then
-    local distance = firstWp.coordinate:Get2DDistance(nearestAirbase:GetCoordinate())
-    -- Only use airbase if marker is within 5km of it
+    local distance = mission.spawn.coordinate:Get2DDistance(nearestAirbase:GetCoordinate())
     if distance < 5000 then
       startAirbase = nearestAirbase:GetName()
-      BOMBER_LOGGER:Info("MARKER", "Auto-detected airbase: %s (%.0f m from marker)", startAirbase, distance)
-    else
-      BOMBER_LOGGER:Debug("MARKER", "Marker not on airbase (%.0f m from nearest: %s)", distance, nearestAirbase:GetName())
-      if self.Config.AllowAirSpawnFallback then
-        BOMBER_LOGGER:Info("MARKER", "Air spawn fallback enabled - proceeding with air spawn")
-        self:_SendMessage(coalitionSide, string.format(
-          "[!] BOMBER1 not on airbase - using air spawn\n\n" ..
-          "Nearest: %s (%.1f km away)\n" ..
-          "Bombers will spawn in the air at marker position",
-          nearestAirbase:GetName(), 
-          distance / 1000
-        ))
-      else
-        self:_SendMessage(coalitionSide, string.format(
-          "[X] BOMBER1 marker not on airbase!\n\n" ..
-          "Nearest airbase: %s (%.1f km away)\n\n" ..
-          "Move marker onto the airbase to spawn bombers.",
-          nearestAirbase:GetName(), 
-          distance / 1000
-        ))
-        return
-      end
-    end
-  else
-    BOMBER_LOGGER:Debug("MARKER", "No friendly airbase found near marker")
-    if self.Config.AllowAirSpawnFallback then
-      BOMBER_LOGGER:Info("MARKER", "Air spawn fallback enabled - proceeding with air spawn")
-      self:_SendMessage(coalitionSide, "[!] No airbase nearby - using air spawn")
-    else
-      self:_SendMessage(coalitionSide, 
-        "[X] No friendly airbase found!\n\n" ..
-        "BOMBER1 must be placed on or near an airbase."
-      )
-      return
+      BOMBER_LOGGER:Info("MARKER", "%s: Using airbase %s (%.1fkm from spawn marker)", 
+        mission.id, startAirbase, distance / 1000)
     end
   end
   
-  -- Build mission data structure with multiple targets
-  local targets = {}
-  for i, targetWp in ipairs(targetWaypoints) do
-    -- Check if target is near an airbase for location info
-    local nearAirbase = nil
-    local targetAirbase = targetWp.coordinate:GetClosestAirbase(Airbase.Category.AIRDROME)
-    if targetAirbase then
-      local distance = targetWp.coordinate:Get2DDistance(targetAirbase:GetCoordinate())
-      if distance < 5000 then -- Within 5km
-        nearAirbase = targetAirbase:GetName()
-      end
-    end
-    
-    table.insert(targets, {
-      name = targetWp.markerText,
-      coordinate = targetWp.coordinate,
-      sequence = targetWp.sequence,
-      attackType = targetWp.targetParams and targetWp.targetParams.attackType or "AUTO",
-      attackHeading = targetWp.targetParams and targetWp.targetParams.heading or nil,
-      airbaseName = nearAirbase
-    })
-  end
-  
-  local missionDataStruct = {
-    Coalition = coalitionSide,
-    StartAirbase = startAirbase,
-    StartPos = firstWp.coordinate,
-    Targets = targets,
+  -- Build mission data structure
+  local missionName = mission.id
+  local bomberMissionData = {
+    MissionName = missionName,
     BomberType = bomberType,
     FlightSize = flightSize,
-    CruiseAlt = params.altitude,
-    CruiseSpeed = params.speed,
+    Coalition = coalition,
+    StartAirbase = startAirbase,
+    Altitude = params.altitude or 25000,
+    Speed = params.speed or 400,
     ForceLaunch = params.force or false,
-    RouteWaypoints = {},
-    EgressWaypoints = {},
-    RTBWaypoint = nil,
+    ScrambleLaunch = params.scramble or false,
+    Waypoints = {},
+    Targets = {},
+    RTBPoint = mission.rtb and mission.rtb.coordinate or nil
   }
   
-  -- Collect additional route waypoints (BOMBER2, BOMBER3, etc.)
-  for i = 2, #bomberWaypoints do
-    table.insert(missionDataStruct.RouteWaypoints, {
-      coordinate = bomberWaypoints[i].coordinate,
-      sequence = bomberWaypoints[i].sequence
+  -- Add spawn point as first waypoint if no airbase (air start)
+  if not startAirbase then
+    table.insert(bomberMissionData.Waypoints, {
+      Coordinate = mission.spawn.coordinate,
+      Type = "TurningPoint",
+      Description = "Air Start"
     })
   end
   
-  -- Collect egress waypoints (EGRESS1, EGRESS2, etc.)
-  for i, egressWp in ipairs(egressWaypoints) do
-    table.insert(missionDataStruct.EgressWaypoints, {
-      coordinate = egressWp.coordinate,
-      sequence = egressWp.sequence
+  -- Add intermediate waypoints
+  for _, wp in ipairs(mission.waypoints) do
+    table.insert(bomberMissionData.Waypoints, {
+      Coordinate = wp.coordinate,
+      Type = "TurningPoint",
+      Description = string.format("Waypoint %d", wp.sequence)
     })
   end
   
-  -- Get RTB waypoint if provided (only use first one if multiple)
-  if #rtbWaypoints > 0 then
-    missionDataStruct.RTBWaypoint = {
-      coordinate = rtbWaypoints[1].coordinate,
-      sequence = rtbWaypoints[1].sequence
-    }
+  -- Add targets
+  for _, tgt in ipairs(mission.targets) do
+    table.insert(bomberMissionData.Targets, {
+      Coordinate = tgt.coordinate,
+      attackType = tgt.targetParams.attackType,
+      attackHeading = tgt.targetParams.heading,
+      Description = string.format("Target %d", tgt.sequence)
+    })
   end
   
-  -- Spawn the bomber mission
-  local success, mission = self:_SpawnBomberMission(missionDataStruct)
-  
-  if success then
-    local targetCount = #missionDataStruct.Targets
+  -- Create and activate mission
+  local bomberMission = BOMBER_MISSION:New(missionName, bomberMissionData)
+  if bomberMission:Activate() then
+    BOMBER_LOGGER:Info("MARKER", "%s: Mission activated successfully", mission.id)
     
-    -- Build target description with attack types and locations
-    local targetDescriptions = {}
-    for i, target in ipairs(missionDataStruct.Targets) do
-      local attackTypeDesc = ""
-      local locationDesc = ""
-      
-      -- Determine attack type description
-      if target.attackType == "RUNWAY" then
-        attackTypeDesc = "RUNWAY"
-      elseif target.attackType == "BRIDGE" then
-        attackTypeDesc = "BRIDGE"
-      elseif target.attackType == "BUILDING" then
-        attackTypeDesc = "BUILDING"
-      else
-        attackTypeDesc = "TARGET"
-      end
-      
-      -- Add location if known
-      if target.airbaseName then
-        locationDesc = " @ " .. target.airbaseName
-      end
-      
-      -- Add heading for runway attacks
-      if target.attackType == "RUNWAY" and target.attackHeading then
-        locationDesc = locationDesc .. string.format(" (HDG %.0f°)", target.attackHeading)
-      end
-      
-      table.insert(targetDescriptions, attackTypeDesc .. locationDesc)
-    end
-    
-    -- Build the complete message with proper formatting
-    local missionMsg = "[AC] BOMBER MISSION ACTIVE\n\n"
-    missionMsg = missionMsg .. "Callsign: " .. (mission.Callsign or "Unknown") .. "\n"
-    missionMsg = missionMsg .. "Aircraft: " .. missionDataStruct.BomberType .. " x" .. missionDataStruct.FlightSize .. "\n"
-    
-    if targetCount == 1 then
-      missionMsg = missionMsg .. "Target: " .. targetDescriptions[1] .. "\n"
-    else
-      missionMsg = missionMsg .. "Targets: " .. targetCount .. "\n"
-      for _, desc in ipairs(targetDescriptions) do
-        missionMsg = missionMsg .. "  - " .. desc .. "\n"
-      end
-    end
-    
-    missionMsg = missionMsg .. "\n[!] PROVIDE ESCORT IMMEDIATELY!"
-    
-    self:_SendMessage(coalitionSide, missionMsg)
-    
-    -- Cleanup markers if configured
+    -- Clean up markers if configured
     if self.Config.deleteMarkersAfterUse then
-      for _, markerId in ipairs(missionData.allMarkerIds) do
+      for _, markerId in ipairs(mission.markerIds) do
         trigger.action.removeMark(markerId)
       end
+      BOMBER_LOGGER:Debug("MARKER", "%s: Cleaned up %d marker(s)", mission.id, #mission.markerIds)
     end
   else
-    self:_SendMessage(coalitionSide, "MISSION SPAWN FAILED: " .. tostring(mission))
+    BOMBER_LOGGER:Error("MARKER", "%s: Mission activation failed", mission.id)
   end
 end
 
