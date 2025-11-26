@@ -5572,6 +5572,11 @@ function BOMBER:_StartRTBMonitor()
   local monitorInterval = 5
   self.RTBMonitorInterval = monitorInterval
   self.RTBLandingStuckSeconds = 0
+  
+  -- Orbit detection failsafe
+  self.RTBLastPosition = nil
+  self.RTBOrbitCheckCount = 0
+  self.RTBMaxOrbitChecks = 6  -- 6 checks * 10 seconds = 60 seconds in orbit before despawn
 
   if self.RTBRoute and #self.RTBRoute > 0 then
     self:_ApplyRTBWaypointSpeed(self.RTBWaypointIndex)
@@ -5624,6 +5629,63 @@ function BOMBER:_StartRTBMonitor()
     local currentSpeed = self.Group:GetVelocityKNOTS() or 0
     local currentAltMeters = self.Group:GetAltitude() or 0
     BOMBER_LOGGER:Trace("RTB", "%s: RTB monitor tick - state %s | speed %.0f kts | alt %.0fft", self.Callsign, self:GetState(), currentSpeed, feet(currentAltMeters))
+
+    -- ORBIT DETECTION FAILSAFE: Check if bomber is stuck circling
+    -- This happens because DCS AI gets confused after we change its route mid-flight
+    if self:Is(BOMBER.States.RTB) then
+      local currentPos = coord
+      
+      -- Check if we're on the final waypoint (should be landing)
+      local onFinalWaypoint = (self.RTBWaypointIndex or 1) >= #self.RTBRoute
+      
+      if onFinalWaypoint and self.RTBLastPosition then
+        -- Check distance moved since last check
+        local distanceMoved = currentPos:Get2DDistance(self.RTBLastPosition)
+        
+        -- If bomber hasn't moved much (< 500m in 10 seconds = orbit/stuck)
+        if distanceMoved < 500 then
+          self.RTBOrbitCheckCount = (self.RTBOrbitCheckCount or 0) + 1
+          BOMBER_LOGGER:Warn("RTB", "%s: Possible orbit detected - moved only %.1fm in %ds (check %d/%d)", 
+            self.Callsign, distanceMoved, monitorInterval * 2, self.RTBOrbitCheckCount, self.RTBMaxOrbitChecks)
+          
+          if self.RTBOrbitCheckCount >= self.RTBMaxOrbitChecks then
+            BOMBER_LOGGER:Error("RTB", "%s: ORBIT FAILSAFE TRIGGERED - Bomber stuck circling airbase for %d seconds. DCS AI won't land after route change. Despawning.", 
+              self.Callsign, self.RTBOrbitCheckCount * monitorInterval * 2)
+            BOMBER_LOGGER:Info("RTB", "%s: Mission aborted due to SAM threat - RTB attempted but AI failed to land (DCS limitation)", self.Callsign)
+            
+            -- Despawn the bomber
+            self:_BroadcastMessage(string.format("%s: RTB landing failed - crew ejected safely.", self.Callsign))
+            
+            -- Mark as completed and despawn
+            if self.RTBMonitor then
+              self.RTBMonitor:Stop()
+              self.RTBMonitor = nil
+            end
+            if self.LandingMonitor then
+              self.LandingMonitor:Stop()
+              self.LandingMonitor = nil
+            end
+            
+            self:__Despawn(1)
+            return
+          end
+        else
+          -- Moving normally, reset counter
+          self.RTBOrbitCheckCount = 0
+        end
+      end
+      
+      -- Update position tracking (check every 2 intervals = ~10 seconds)
+      if not self.RTBPositionCheckCounter then
+        self.RTBPositionCheckCounter = 0
+      end
+      self.RTBPositionCheckCounter = self.RTBPositionCheckCounter + 1
+      
+      if self.RTBPositionCheckCounter >= 2 then
+        self.RTBLastPosition = currentPos
+        self.RTBPositionCheckCounter = 0
+      end
+    end
 
     local index = self.RTBWaypointIndex or 1
     if index > #self.RTBRoute then
@@ -7428,12 +7490,12 @@ function BOMBER:_CheckSAMReroute()
   local rec = analysis.recommendation
   
   if rec.action == "ABORT" then
-    -- Must abort mission
+    -- Must abort mission immediately
     BOMBER_LOGGER:Warn("THREAT", "%s: SAM threat blocks route - %s", self.Callsign, rec.message)
     self:_BroadcastMessage(string.format("%s: [ABORT] %s", self.Callsign, rec.message))
     
-    -- Abort the mission
-    self:__Abort(2)
+    -- Abort the mission immediately (not scheduled)
+    self:Abort()
   end
 end
 
@@ -8484,254 +8546,52 @@ function BOMBER:onenterAborting()
   if rtbAirbase then
     BOMBER_LOGGER:Info("RTB", "%s: Commanding land at %s", self.Callsign, rtbAirbase:GetName())
 
-    local group = self.Group
-    if not group or not group:IsAlive() then
-      BOMBER_LOGGER:Error("RTB", "%s: ERROR - Bomber group not available for RTB command", self.Callsign)
-    else
-        group:RouteStop()
-        group:ClearTasks()
-        BOMBER_LOGGER:Debug("RTB", "%s: Cleared active tasks prior to RTB routing", self.Callsign)
-      local rtbCoord = rtbAirbase:GetCoordinate()
-      local currentCoord = group:GetCoordinate()
-      local currentSpeed = group:GetVelocityKNOTS() or 0
-      local fallbackSpeed = self.CruiseSpeed or (self.Profile and self.Profile.CruiseSpeed) or BOMBER_ESCORT_CONFIG.DefaultSpeed or 300
-      local desiredSpeed = currentSpeed > 10 and currentSpeed or fallbackSpeed
-      local approachSpeed = math.max(desiredSpeed * 0.7, 150)
-      local cruiseSpeedMPS = desiredSpeed * 0.514444
-      local landingSpeedMPS = approachSpeed * 0.514444
-      local fieldAltitude = rtbCoord:GetLandHeight() or 0
-
-      BOMBER_LOGGER:Debug("RTB", "%s: RTB routing speed %.0f kts (landing %.0f kts)", self.Callsign, desiredSpeed, approachSpeed)
-
-      local route = {}
-      local approachLegs = 0
-
-      local function dumpControllerRouteSnapshot(controller)
-        if not controller then
-          BOMBER_LOGGER:Error("RTB", "%s: Unable to dump controller mission - controller missing", self.Callsign)
-          return
-        end
-
-        local missionTask, taskErr = self:_GetControllerMissionTask(controller)
-        if not missionTask then
-          BOMBER_LOGGER:Error("RTB", "%s: Unable to read controller mission task - %s", self.Callsign, taskErr or "unknown error")
-          return
-        end
-
-        local routePoints = missionTask.params and missionTask.params.route and missionTask.params.route.points
-        if not routePoints or #routePoints == 0 then
-          BOMBER_LOGGER:Error("RTB", "%s: Controller mission has no route points (task id: %s)", self.Callsign, tostring(missionTask.id))
-          return
-        end
-
-        BOMBER_LOGGER:Debug("RTB", "%s: Controller mission snapshot - %d point(s), task id %s", self.Callsign, #routePoints, tostring(missionTask.id))
-        for idx, point in ipairs(routePoints) do
-          local coordDesc = "(missing coordinates)"
-          if point.x and point.y then
-            local wpCoord = COORDINATE:New(point.x, point.alt or 0, point.y)
-            coordDesc = wpCoord:ToStringLLDMS()
-          end
-          local altitudeFeet = point.alt and ((UTILS and UTILS.MetersToFeet and UTILS.MetersToFeet(point.alt)) or (point.alt * 3.28084)) or 0
-          local speedKnots = point.speed and (point.speed / 0.514444) or 0
-          local action = point.action or point.type or "UNKNOWN"
-          BOMBER_LOGGER:Trace("RTB", "%s: CTRL WP %d -> %s | alt %.0fft | spd %.0fkts | action %s", self.Callsign, idx, coordDesc, altitudeFeet, speedKnots, action)
-        end
-      end
-
-      local function setWaypointSpeed(waypoint, targetSpeedMPS)
-        if not waypoint or not targetSpeedMPS then return end
-        waypoint.speed = targetSpeedMPS
-        waypoint.speed_locked = true
-        waypoint.speedEdited = true
-        if waypoint.task and waypoint.task.params then
-          waypoint.task.params.speed = targetSpeedMPS
-          waypoint.task.params.speed_locked = true
-          waypoint.task.params.speedEdited = true
-        end
-      end
-
-      if currentCoord then
-        local distanceToBase = currentCoord:Get2DDistance(rtbCoord)
-
-        local function normalizeDegrees(value)
-          value = value % 360
-          if value < 0 then value = value + 360 end
-          return value
-        end
-
-        local function diffDegrees(a, b)
-          local diff = math.abs(a - b) % 360
-          if diff > 180 then diff = 360 - diff end
-          return diff
-        end
-
-        local headingToBase = 0
-        if currentCoord and rtbCoord then
-          headingToBase = currentCoord:HeadingTo(rtbCoord)
-        end
-
-        local landingHeading = headingToBase
-        local approachSource = "inbound vector"
-        local runways = rtbAirbase.GetRunways and rtbAirbase:GetRunways() or nil
-        if runways and #runways > 0 then
-          local bestDiff = 361
-          for _, runway in ipairs(runways) do
-            if runway.course then
-              local course = runway.course
-              if math.abs(course) <= (math.pi * 2 + 0.001) then
-                course = math.deg(course)
-              end
-              local primary = normalizeDegrees(course)
-              local secondary = normalizeDegrees(course + 180)
-              for _, candidate in ipairs({primary, secondary}) do
-                local diff = diffDegrees(candidate, headingToBase)
-                if diff < bestDiff then
-                  bestDiff = diff
-                  landingHeading = candidate
-                  approachSource = runway.name and string.format("runway %s", runway.name) or "runway data"
-                end
-              end
-            end
-          end
-        end
-
-        local approachHeading = normalizeDegrees(landingHeading + 180)
-        local currentAltitude = currentCoord.y or fieldAltitude + 1000
-
-        local function metersFromNM(nm)
-          if UTILS and UTILS.NMToMeters then
-            return UTILS.NMToMeters(nm)
-          end
-          return nm * 1852
-        end
-
-        local function buildApproachLeg(offsetMeters, targetAltMeters, speedMPS, label)
-          local legCoord = rtbCoord:Translate(offsetMeters, approachHeading)
-          legCoord:SetAltitude(targetAltMeters, false)  -- Use BARO/MSL for smooth altitude transitions
-          local waypoint = legCoord:WaypointAirTurningPoint(nil, speedMPS)
-          setWaypointSpeed(waypoint, speedMPS)
-          table.insert(route, waypoint)
-          approachLegs = approachLegs + 1
-          BOMBER_LOGGER:Debug("RTB", "%s: Added %s approach fix %.1f km out (alt %.0fft MSL)",
-            self.Callsign,
-            label,
-            offsetMeters / 1000,
-            UTILS.MetersToFeet and UTILS.MetersToFeet(targetAltMeters) or (targetAltMeters * 3.28084))
-        end
-
-        local distanceKm = distanceToBase and (distanceToBase / 1000) or 0
-        BOMBER_LOGGER:Debug("RTB", "%s: RTB geometry - distance %.1f km, inbound heading %.0f°, landing heading %.0f° via %s", 
-          self.Callsign, distanceKm, headingToBase, landingHeading, approachSource)
-
-        local anchorSpeed = math.max(cruiseSpeedMPS, landingSpeedMPS)
-        local anchorWP = currentCoord:WaypointAirTurningPoint(nil, anchorSpeed)
-        setWaypointSpeed(anchorWP, anchorSpeed)
-        table.insert(route, anchorWP)
-        BOMBER_LOGGER:Debug("RTB", "%s: Added anchor waypoint at current position", self.Callsign)
-
-        if distanceToBase and distanceToBase > metersFromNM(10) then
-          local farLeg = math.min(math.max(distanceToBase - metersFromNM(6), metersFromNM(20)), metersFromNM(60))
-          farLeg = math.min(farLeg, distanceToBase - metersFromNM(8))
-          if farLeg > metersFromNM(8) then
-            local farAltitude = math.max(fieldAltitude + UTILS.FeetToMeters(12000), math.min(currentAltitude, fieldAltitude + UTILS.FeetToMeters(28000)))
-            buildApproachLeg(farLeg, farAltitude, cruiseSpeedMPS, "initial")
-          end
-        end
-
-        if distanceToBase and distanceToBase > metersFromNM(6) then
-          local nearLeg = math.min(math.max(distanceToBase - metersFromNM(2.5), metersFromNM(8)), metersFromNM(20))
-          nearLeg = math.min(nearLeg, distanceToBase - metersFromNM(2))
-          if nearLeg > metersFromNM(3) then
-            local nearAltitude = fieldAltitude + UTILS.FeetToMeters(3000)
-            buildApproachLeg(nearLeg, nearAltitude, math.min(cruiseSpeedMPS, landingSpeedMPS * 1.3), "final")
-          end
-        end
-
-        if distanceToBase and distanceToBase > metersFromNM(4.5) then
-          local shortLeg = math.min(math.max(distanceToBase - metersFromNM(1.5), metersFromNM(3)), metersFromNM(5))
-          shortLeg = math.min(shortLeg, distanceToBase - metersFromNM(1))
-          if shortLeg > metersFromNM(2.5) then
-            local shortAltitude = fieldAltitude + UTILS.FeetToMeters(1500)
-            local shortSpeed = math.max(landingSpeedMPS * 0.85, landingSpeedMPS - 15, 80 * 0.514444)
-            buildApproachLeg(shortLeg, shortAltitude, shortSpeed, "short-final")
-          end
-        end
-
-        if approachLegs == 0 then
-          BOMBER_LOGGER:Debug("RTB", "%s: No space for extended approach, proceeding direct from anchor", self.Callsign)
-        end
-      else
-        BOMBER_LOGGER:Warn("RTB", "%s: WARN - Unable to capture current coordinate for RTB route", self.Callsign)
-      end
-
-      local landingTasks = { group:TaskLandAtVec2(rtbCoord:GetVec2()) }
-      local landingWP = self:_BuildLandingWaypoint(rtbAirbase, rtbCoord, landingSpeedMPS, landingTasks, fieldAltitude)
-      if landingWP then
-        setWaypointSpeed(landingWP, landingSpeedMPS)
-        table.insert(route, landingWP)
-      else
-        BOMBER_LOGGER:Error("RTB", "%s: Failed to append landing waypoint to RTB route", self.Callsign)
-      end
-
-      self.RTBRoute = route
-      self.Route = route
-      self.RTBAirbase = rtbAirbase
-      self.RTBLandingTask = landingTasks and landingTasks[1] or nil
-      self.RTBLandingFallbackIssued = false
-      self.RTBLandingStuckSeconds = 0
-
-      if #route > 0 then
-        if self:_ApplyGroupRoute(route, "RTB landing plan", 1) then
-          BOMBER_LOGGER:Info("RTB", "%s: RTB route programmed with %d waypoint(s) (%d approach + landing)", self.Callsign, #route, approachLegs)
-        else
-          BOMBER_LOGGER:Error("RTB", "%s: Failed to apply RTB route with %d waypoint(s)", self.Callsign, #route)
-        end
-        for idx, wp in ipairs(route) do
-          if wp.x and wp.y then
-            local wpCoord = COORDINATE:New(wp.x, wp.alt or 0, wp.y)
-            local wpAltFeet = UTILS and UTILS.MetersToFeet and UTILS.MetersToFeet(wp.alt or 0) or ((wp.alt or 0) * 3.28084)
-            BOMBER_LOGGER:Trace("RTB", "%s: RTB WP %d at %s (alt %.0fft, speed %.0f kts)",
-              self.Callsign,
-              idx,
-              wpCoord:ToStringLLDMS(),
-              wpAltFeet,
-              (wp.speed or cruiseSpeedMPS) / 0.514444)
-          end
-        end
-        local snapshotRetryDelay = 2
-        local maxSnapshotAttempts = 3
-
-        local function attemptControllerSnapshot(attempt)
-          if not group then
-            BOMBER_LOGGER:Error("RTB", "%s: Cannot dump controller route snapshot - group reference lost", self.Callsign)
-            return
-          end
-
-          local controller, controllerErr = self:_GetActiveController()
-
-          if controller then
-            dumpControllerRouteSnapshot(controller)
-            return
-          end
-
-          local errMsg = controllerErr or "controller unavailable"
-          if attempt >= maxSnapshotAttempts then
-            BOMBER_LOGGER:Error("RTB", "%s: Skipping controller route snapshot after %d failed attempt(s) (%s)", self.Callsign, attempt, errMsg)
-            return
-          end
-
-          BOMBER_LOGGER:Warn("RTB", "%s: Controller snapshot attempt %d failed (%s) - retrying in %d seconds", self.Callsign, attempt, errMsg, snapshotRetryDelay)
-          SCHEDULER:New(nil, function()
-            attemptControllerSnapshot(attempt + 1)
-          end, {}, snapshotRetryDelay)
-        end
-
-        attemptControllerSnapshot(1)
-        self:_StartRTBMonitor()
-      else
-        BOMBER_LOGGER:Error("RTB", "%s: ERROR - No RTB route points generated", self.Callsign)
-      end
+    -- Check if group is still alive before issuing commands
+    if not self.Group or not self.Group:IsAlive() then
+      BOMBER_LOGGER:Error("RTB", "%s: ERROR - Bomber group destroyed, cannot execute RTB", self.Callsign)
+      return
     end
+    
+    -- Build RTB route with proper waypoints for landing
+    local currentCoord = self.Group:GetCoordinate()
+    local rtbCoord = rtbAirbase:GetCoordinate()
+    local rtbAltitudeFeet = 5000  -- Approach altitude
+    
+    -- Create RTB waypoints: current position -> approach point -> airbase
+    local wp1 = currentCoord:WaypointAir(
+      "BARO",
+      COORDINATE.WaypointType.TurningPoint,
+      COORDINATE.WaypointAction.TurningPoint,
+      self.CruiseSpeed or 400,
+      true
+    )
+    
+    -- Approach waypoint 10nm out from airbase
+    local approachCoord = rtbCoord:Translate(UTILS.NMToMeters(10), rtbAirbase:GetHeading())
+    approachCoord:SetAltitude(UTILS.FeetToMeters(rtbAltitudeFeet))
+    local wp2 = approachCoord:WaypointAir(
+      "BARO",
+      COORDINATE.WaypointType.TurningPoint,
+      COORDINATE.WaypointAction.TurningPoint,
+      250,  -- Slower approach speed
+      true
+    )
+    
+    -- Landing waypoint at airbase
+    local wp3 = rtbCoord:WaypointAirLanding(
+      self.CruiseSpeed or 400,
+      rtbAirbase
+    )
+    
+    self.RTBRoute = {wp1, wp2, wp3}
+    
+    -- Route the group
+    self.Group:Route(self.RTBRoute, 1)
+    BOMBER_LOGGER:Info("RTB", "%s: RTB route with %d waypoints issued to %s", 
+      self.Callsign, #self.RTBRoute, rtbAirbase:GetName())
+    
+    -- Start RTB monitoring
+    self:_StartRTBMonitor()
   else
     BOMBER_LOGGER:Error("RTB", "%s: CRITICAL - Cannot RTB without airbase!", self.Callsign)
   end
