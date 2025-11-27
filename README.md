@@ -76,8 +76,6 @@ A comprehensive, dynamic AI bomber mission system for DCS World using the MOOSE 
 - `BOMBER1:RTB` — Custom RTB point
 - `RESPAWN1` — Respawn last mission
 
-See the in-game "Quick Start Guide" or `MARKER_GUIDE.md` for full details.
-
 ## Configuration
 
 Edit the `BOMBER_ESCORT_CONFIG` table in the script to adjust:
