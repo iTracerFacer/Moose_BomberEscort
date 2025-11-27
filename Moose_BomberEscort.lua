@@ -475,6 +475,23 @@ function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed
   -- Assign type as first, then parse others based on content
   if #filteredParts >= 1 and filteredParts[1] ~= "" then
     result.type = string.upper(filteredParts[1])
+    
+    -- Validate bomber type
+    local validBomberTypes = {
+      "B-17G", "B-24J", "B-52H", "B-1B", "TU-95MS", "TU-22M3"
+    }
+    local isValid = false
+    for _, validType in ipairs(validBomberTypes) do
+      if result.type == validType then
+        isValid = true
+        break
+      end
+    end
+    if not isValid then
+      BOMBER_LOGGER:Error("MARKER", "Invalid bomber type '%s'. Supported types: %s", result.type, table.concat(validBomberTypes, ", "))
+      MESSAGE:New(string.format("Invalid bomber type '%s'. Supported types: %s", result.type, table.concat(validBomberTypes, ", ")), 10):ToAll()
+      return nil
+    end
   end
   for i = 2, #filteredParts do
     local part = filteredParts[i]
@@ -556,7 +573,7 @@ end
 -- Groups markers by mission ID and returns organized mission data
 -- @param #BOMBER_MARKER self
 -- @return #table missions Table of missions keyed by mission ID (e.g., "BOMBER1", "BOMBER2")
-function BOMBER_MARKER:_ScanForMultiMissionMarkers()
+function BOMBER_MARKER:_ScanForMultiMissionMarkers(coalitionSide)
   local missions = {}
   
   -- Scan all markers
@@ -565,6 +582,12 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers()
     if markerData and markerData[i] then
       local marker = markerData[i]
       local markerText = marker.text
+      
+      -- Only process markers from the specified coalition
+      if marker.coalition ~= coalitionSide then
+        -- Skip markers from other coalitions
+        goto continue
+      end
       
       if markerText then
         local upperText = string.upper(markerText)
@@ -577,7 +600,9 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers()
         end
         
         if #parts >= 2 then
-          local missionId = string.upper(parts[1])
+          local baseMissionId = string.upper(parts[1])
+          local coalitionPrefix = coalitionSide == coalition.side.BLUE and "BLUE_" or "RED_"
+          local missionId = coalitionPrefix .. baseMissionId
           local keyword = string.upper(parts[2])
           
           -- Check if this is a spawn marker
@@ -603,12 +628,13 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers()
             if not missions[missionId] then
               missions[missionId] = {
                 id = missionId,
+                baseId = baseMissionId,
                 spawn = nil,
                 waypoints = {},
                 targets = {},
                 rtb = nil,
                 markerIds = {},
-                coalition = marker.coalition or coalition.side.BLUE
+                coalition = coalitionSide
               }
             end
             
@@ -620,13 +646,16 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers()
             
             if isSpawn then
               -- SPAWN marker: BOMBER1:SPAWN:B-1B:2:FL250:400:FORCE
-              missions[missionId].spawn = {
-                coordinate = coord,
-                markerId = marker.idx,
-                markerText = markerText,
-                params = self:_ParseWaypointMarker(markerText)
-              }
-              BOMBER_LOGGER:Debug("MARKER", "Found spawn marker for %s: %s", missionId, markerText)
+              local parsed = self:_ParseWaypointMarker(markerText)
+              if parsed then
+                missions[missionId].spawn = {
+                  coordinate = coord,
+                  markerId = marker.idx,
+                  markerText = markerText,
+                  params = parsed
+                }
+                BOMBER_LOGGER:Debug("MARKER", "Found spawn marker for %s: %s", baseMissionId, markerText)
+              end
               
             elseif wpNum then
               -- Waypoint marker: BOMBER1:WP1
@@ -649,7 +678,7 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers()
                 markerText = markerText,
                 targetParams = self:_ParseTargetMarker(markerText)
               })
-              BOMBER_LOGGER:Debug("MARKER", "Found target %d for %s: %s", sequence, missionId, markerText)
+              BOMBER_LOGGER:Debug("MARKER", "Found target %d for %s: %s", sequence, baseMissionId, markerText)
               
             elseif isRTB then
               -- RTB marker: BOMBER1:RTB
@@ -658,12 +687,13 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers()
                 markerId = marker.idx,
                 markerText = markerText
               }
-              BOMBER_LOGGER:Debug("MARKER", "Found RTB marker for %s: %s", missionId, markerText)
+              BOMBER_LOGGER:Debug("MARKER", "Found RTB marker for %s: %s", baseMissionId, markerText)
             end
           end
         end
       end
     end
+    ::continue::
   end
   
   -- Sort waypoints and targets by sequence
@@ -679,9 +709,10 @@ end
 -- Format: MISSIONID:KEYWORD:PARAMS
 -- Examples: BOMBER1:SPAWN:B-1B, BOMBER1:WP1, BOMBER1:TARGET1:RUNWAY:070
 -- @param #BOMBER_MARKER self
-function BOMBER_MARKER:_CheckMarkers()
+-- @param #number coalitionSide Coalition to scan for
+function BOMBER_MARKER:_CheckMarkers(coalitionSide)
   -- Scan for multi-mission format markers
-  local missions = self:_ScanForMultiMissionMarkers()
+  local missions = self:_ScanForMultiMissionMarkers(coalitionSide)
   
   -- Execute all found missions
   return self:_ExecuteMultiMissions(missions)
@@ -695,7 +726,7 @@ function BOMBER_MARKER:_ExecuteMultiMissions(missions)
   local feedbackMsgs = {}
 
   for missionId, mission in pairs(missions) do
-    local feedbackMsg = string.format("[MISSION REQUESTED] %s waypoints found.. verifying:\n\n", missionId)
+    local feedbackMsg = string.format("[MISSION REQUESTED] %s waypoints found.. verifying:\n\n", mission.baseId)
     local hasSpawn = mission.spawn ~= nil
     local hasTargets = #mission.targets > 0
     local hasWaypoints = #mission.waypoints > 0
@@ -2632,7 +2663,7 @@ function BOMBER_MISSION_MANAGER:_InitializeMenus()
       parentMenu,
       function()
         if _BOMBER_MARKER_SYSTEM then
-          _BOMBER_MARKER_SYSTEM:_CheckMarkers()
+          _BOMBER_MARKER_SYSTEM:_CheckMarkers(coalitionSide)
         else
           MESSAGE:New("Bomber system not initialized", 10):ToCoalition(coalitionSide)
         end
@@ -2840,8 +2871,14 @@ function BOMBER_MISSION_MANAGER:_ShowPlayerGuide(coalitionSide)
     "TARGET1:RUNWAY:270",
     "  -> Carpet bomb runway from heading 270°",
     "",
-    "TARGET1:BUILDING / BRIDGE",
-    "  -> Point target attack",
+    "TARGET1:CARPET:090",
+    "  -> Area carpet bombing from heading 090°",
+    "",
+    "TARGET1:FACTORY:CARPET:FL150",
+    "  -> Factory carpet bombing at FL150",
+    "",
+    "TARGET1:FUELTANK / BUNKER / DEPOT",
+    "  -> Point target attack with custom type",
     "",
     "TARGET2, TARGET3...",
     "  -> Multiple targets in sequence",
@@ -3238,7 +3275,7 @@ function BOMBER_MISSION:_BuildRoute()
     end
     
     -- Configure bombing run based on target type
-    local ipDistance, ipHeading, attackQty, attackType, expend
+    local ipDistance, ipHeading, attackQty, bombType, expend
     
     if isRunwayTarget or attackType == "CARPET" then
       -- CARPET BOMBING - Single devastating pass (runway or non-runway)
@@ -3274,7 +3311,7 @@ function BOMBER_MISSION:_BuildRoute()
       
       ipHeading = approachHeading
       attackQty = 1 -- Single pass only
-      attackType = "Carpet" -- Carpet bombing mode
+      bombType = "Carpet" -- Carpet bombing mode
       expend = "All" -- Drop everything in one pass
       
       BOMBER_LOGGER:Info("ROUTE", "Target %d: CARPET BOMB - 1 pass, heading %.0f°, expend ALL", 
@@ -3284,7 +3321,7 @@ function BOMBER_MISSION:_BuildRoute()
       ipDistance = 20000 -- 20km initial point
       ipHeading = 180 -- Default approach from north
       attackQty = #self.Targets == 1 and 4 or 2 -- Fewer passes per target if multiple targets
-      attackType = "Bombing" -- Standard bombing
+      bombType = "Bombing" -- Standard bombing
       expend = #self.Targets == 1 and "All" or "Half"
       BOMBER_LOGGER:Info("ROUTE", "Target %d: POINT TARGET - %d passes with standard bombing", 
         targetIndex, attackQty)
