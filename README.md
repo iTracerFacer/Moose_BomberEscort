@@ -362,7 +362,28 @@ STRIKE5:RTB
   └─ Custom RTB point for mission STRIKE5
 ```
 
-#### 5. RESPAWN Marker (Special)
+#### 5. RESET Marker (Mission Control)
+
+Immediately aborts and resets an active mission, cleaning up all resources.
+
+**Syntax:** `MISSION_ID:RESET`
+
+**Examples:**
+```
+BOMBER1:RESET
+  └─ Aborts and resets mission BOMBER1
+
+STRIKE5:RESET
+  └─ Aborts and resets mission STRIKE5
+```
+
+**Usage:**
+- Place a RESET marker to abort a running mission
+- Cleans up the bomber group and all associated resources
+- Mission ID becomes available for reuse
+- Useful for canceling missions that are stuck or no longer needed
+
+#### 6. RESPAWN Marker (Special)
 
 Respawns the last completed mission at a new spawn location.
 
