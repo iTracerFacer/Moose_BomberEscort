@@ -29,7 +29,9 @@ end
 --B-52H -> Template name: BOMBER_B52H
 --B-1B -> Template name: BOMBER_B1B
 --Tu-95MS -> Template name: BOMBER_TU95
+--Tu-142 -> Template name: BOMBER_TU142
 --Tu-22M3 -> Template name: BOMBER_TU22
+--Tu-160 -> Template name: BOMBER_TU160
 --B-24J -> Template name: BOMBER_B24J
 
 ---
@@ -334,6 +336,46 @@ BOMBER_PROFILE.DB = {
     ThreatTolerance = "Low",
   },
   
+  ["Tu-160"] = {
+    Type = "Tu-160",
+    DisplayName = "Tu-160 Blackjack",
+    Category = "Modern",
+    CruiseSpeed = 550,
+    MaxSpeed = 1200,
+    MinSpeed = 350,
+    CruiseAlt = 40000,
+    MaxAlt = 50000,
+    MinAlt = 1000,
+    DefaultFlightSize = 1,
+    HasDefensiveGuns = false,
+    FormationTight = false,
+    EvasionCapability = "Very High",
+    EscortRequired = false, -- Supersonic strategic bomber, can operate independently
+    MinEscorts = 0,
+    MaxEscortDistance = 25000,
+    ThreatTolerance = "Very High",
+  },
+  
+  ["Tu-142"] = {
+    Type = "Tu-142",
+    DisplayName = "Tu-142 Bear-F",
+    Category = "Cold War",
+    CruiseSpeed = 380,
+    MaxSpeed = 440,
+    MinSpeed = 260,
+    CruiseAlt = 28000,
+    MaxAlt = 39000,
+    MinAlt = 500,
+    DefaultFlightSize = 1,
+    HasDefensiveGuns = true,
+    FormationTight = false,
+    EvasionCapability = "Low",
+    EscortRequired = BOMBER_ESCORT_CONFIG.RequireEscort,
+    MinEscorts = 1,
+    MaxEscortDistance = 15000,
+    ThreatTolerance = "Medium",
+  },
+  
   -- Modern
   ["B-1B"] = {
     Type = "B-1B",
@@ -366,15 +408,82 @@ function BOMBER_PROFILE:Get(bomberType)
     return nil
   end
   
+  -- Normalize input: uppercase and remove spaces/hyphens for fuzzy matching
+  local normalized = string.upper(bomberType):gsub("[ %-]", "")
+  
   -- Try exact match first
   if BOMBER_PROFILE.DB[bomberType] then
     return BOMBER_PROFILE.DB[bomberType]
   end
   
-  -- Try partial match (case insensitive)
+  -- Define aliases for each bomber (multiple ways to type the same plane)
+  local aliases = {
+    -- Tu-95 Bear (any variation)
+    ["TU95"] = "Tu-95",
+    ["TU95MS"] = "Tu-95",
+    ["TU95M"] = "Tu-95",
+    ["BEAR"] = "Tu-95",
+    
+    -- Tu-142 Bear-F (maritime patrol variant)
+    ["TU142"] = "Tu-142",
+    ["BEARF"] = "Tu-142",
+    
+    -- Tu-22M3 Backfire (any variation)
+    ["TU22"] = "Tu-22M3",
+    ["TU22M"] = "Tu-22M3",
+    ["TU22M3"] = "Tu-22M3",
+    ["BACKFIRE"] = "Tu-22M3",
+    
+    -- Tu-160 Blackjack
+    ["TU160"] = "Tu-160",
+    ["BLACKJACK"] = "Tu-160",
+    ["WHITESWAN"] = "Tu-160",
+    
+    -- B-1B Lancer
+    ["B1"] = "B-1B",
+    ["B1B"] = "B-1B",
+    ["LANCER"] = "B-1B",
+    ["BONE"] = "B-1B",
+    
+    -- B-52H Stratofortress
+    ["B52"] = "B-52H",
+    ["B52H"] = "B-52H",
+    ["BUFF"] = "B-52H",
+    ["STRATOFORTRESS"] = "B-52H",
+    
+    -- B-17G Flying Fortress
+    ["B17"] = "B-17G",
+    ["B17G"] = "B-17G",
+    ["FORTRESS"] = "B-17G",
+    ["FLYINGFORTRESS"] = "B-17G",
+    
+    -- B-24J Liberator
+    ["B24"] = "B-24J",
+    ["B24J"] = "B-24J",
+    ["LIBERATOR"] = "B-24J",
+  }
+  
+  -- Check aliases
+  if aliases[normalized] then
+    local profileKey = aliases[normalized]
+    if BOMBER_PROFILE.DB[profileKey] then
+      BOMBER_LOGGER:Debug("PROFILE", "Matched '%s' to profile '%s' via alias", bomberType, profileKey)
+      return BOMBER_PROFILE.DB[profileKey]
+    end
+  end
+  
+  -- Try case-insensitive match against profile keys
   local searchType = string.upper(bomberType)
   for profileType, profile in pairs(BOMBER_PROFILE.DB) do
-    if string.find(string.upper(profileType), searchType) then
+    if string.upper(profileType) == searchType then
+      return profile
+    end
+  end
+  
+  -- Try partial match against Type field
+  for profileType, profile in pairs(BOMBER_PROFILE.DB) do
+    local upperType = string.upper(profile.Type)
+    if upperType == searchType then
       return profile
     end
   end
@@ -475,23 +584,6 @@ function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed
   -- Assign type as first, then parse others based on content
   if #filteredParts >= 1 and filteredParts[1] ~= "" then
     result.type = string.upper(filteredParts[1])
-    
-    -- Validate bomber type
-    local validBomberTypes = {
-      "B-17G", "B-24J", "B-52H", "B-1B", "TU-95MS", "TU-22M3"
-    }
-    local isValid = false
-    for _, validType in ipairs(validBomberTypes) do
-      if result.type == validType then
-        isValid = true
-        break
-      end
-    end
-    if not isValid then
-      BOMBER_LOGGER:Error("MARKER", "Invalid bomber type '%s'. Supported types: %s", result.type, table.concat(validBomberTypes, ", "))
-      MESSAGE:New(string.format("Invalid bomber type '%s'. Supported types: %s", result.type, table.concat(validBomberTypes, ", ")), 10):ToAll()
-      return nil
-    end
   end
   for i = 2, #filteredParts do
     local part = filteredParts[i]
@@ -809,7 +901,10 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
   end
 
   -- Validate bomber type
-  if not BOMBER_PROFILE:Get(bomberType) then
+  BOMBER_LOGGER:Debug("MARKER", "_ExecuteSingleMission: Validating bomber type '%s'", bomberType)
+  local profile = BOMBER_PROFILE:Get(bomberType)
+  if not profile then
+    BOMBER_LOGGER:Error("MARKER", "_ExecuteSingleMission: No profile found for bomber type '%s'", bomberType)
     self:_SendMessage(coalition, string.format(
       "[X] INVALID BOMBER TYPE: %s\n\nAvailable types: %s", 
       bomberType, 
@@ -817,17 +912,25 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
     ))
     return
   end
+  BOMBER_LOGGER:Debug("MARKER", "_ExecuteSingleMission: Profile found for '%s'", bomberType)
 
   -- Check template exists
-  if _BOMBER_AVAILABLE_TEMPLATES and not _BOMBER_AVAILABLE_TEMPLATES[bomberType] then
-    local templateName = string.gsub(bomberType, "[-]", "")
-    templateName = string.gsub(templateName, "MS$", "")
-    templateName = "BOMBER_" .. string.upper(templateName)
+  BOMBER_LOGGER:Debug("MARKER", "_ExecuteSingleMission: Checking template availability (_BOMBER_AVAILABLE_TEMPLATES=%s)", _BOMBER_AVAILABLE_TEMPLATES and "exists" or "nil")
+  if _BOMBER_AVAILABLE_TEMPLATES then
+    local templateAvailable = _BOMBER_AVAILABLE_TEMPLATES[bomberType]
+    BOMBER_LOGGER:Debug("MARKER", "_ExecuteSingleMission: Template '%s' available = %s", bomberType, tostring(templateAvailable))
+    if not templateAvailable then
+      local templateName = string.gsub(bomberType, "[-]", "")
+      templateName = string.gsub(templateName, "MS$", "")
+      templateName = "BOMBER_" .. string.upper(templateName)
 
-    self:_SendMessage(coalition, string.format(
-      "[X] TEMPLATE MISSING: %s\n\nAdd bomber template to mission editor", templateName))
-    return
+      BOMBER_LOGGER:Error("MARKER", "_ExecuteSingleMission: Template not available - '%s'", templateName)
+      self:_SendMessage(coalition, string.format(
+        "[X] TEMPLATE MISSING: %s\n\nAdd bomber template to mission editor", templateName))
+      return
+    end
   end
+  BOMBER_LOGGER:Debug("MARKER", "_ExecuteSingleMission: Template validation passed")
   
   -- Detect airbase from spawn marker
   local startAirbase = nil
