@@ -445,38 +445,49 @@ function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed
     table.insert(parts, (string.gsub(part, "^%s*(.-)%s*$", "%1"))) -- Trim whitespace
   end
   
-  -- Detect format: check if part 2 is SPAWN/START keyword
-  local startIndex = 2
-  local upperPart2 = parts[2] and string.upper(parts[2]) or ""
-  for _, keyword in ipairs(self.Config.spawnKeywords) do
-    if upperPart2 == keyword then
-      startIndex = 3 -- Skip the SPAWN/START keyword
-      break
+  -- Remove mission ID (always first)
+  local paramParts = {}
+  for i = 2, #parts do
+    table.insert(paramParts, parts[i])
+  end
+
+  -- Remove SPAWN/START keyword wherever it appears
+  local filteredParts = {}
+  for _, part in ipairs(paramParts) do
+    local isSpawnKeyword = false
+    for _, keyword in ipairs(self.Config.spawnKeywords) do
+      if string.upper(part) == keyword then
+        isSpawnKeyword = true
+        break
+      end
+    end
+    if not isSpawnKeyword then
+      table.insert(filteredParts, part)
     end
   end
-  
-  -- Parse parameters starting from detected index
-  -- Format: [MISSIONID]:[SPAWN/START]:[Type]:[Size]:[Alt]:[Speed]
-  if #parts >= startIndex and parts[startIndex] ~= "" then 
-    result.type = parts[startIndex] 
+
+  -- Now, filteredParts should be: [Type], [Size], [Alt], [Speed] (in any order after removing SPAWN/START)
+  -- Assign by position: type, size, altitude, speed
+  if #filteredParts >= 1 and filteredParts[1] ~= "" then
+    result.type = filteredParts[1]
   end
-  if #parts >= startIndex + 1 and parts[startIndex + 1] ~= "" then 
-    result.size = tonumber(parts[startIndex + 1])
+  if #filteredParts >= 2 and filteredParts[2] ~= "" then
+    result.size = tonumber(filteredParts[2])
   end
-  if #parts >= startIndex + 2 then
-    -- Parse FL format or raw number
-    local altStr = string.upper(parts[startIndex + 2])
+  if #filteredParts >= 3 then
+    local altStr = string.upper(filteredParts[3])
     local flNum = string.match(altStr, "FL(%d+)")
     if flNum then
       result.altitude = tonumber(flNum) * 100
     else
-      result.altitude = tonumber(parts[startIndex + 2]) or defaultAlt
+      result.altitude = tonumber(filteredParts[3]) or defaultAlt
     end
   end
-  if #parts >= startIndex + 3 then 
-    result.speed = tonumber(parts[startIndex + 3]) or defaultSpeed 
+  if #filteredParts >= 4 then
+    result.speed = tonumber(filteredParts[4]) or defaultSpeed
   end
-  
+
+  BOMBER_LOGGER:Debug("MARKER", "_ParseWaypointMarker: markerText='%s', parsed type='%s'", markerText, tostring(result.type))
   return result
 end
 
@@ -661,24 +672,30 @@ function BOMBER_MARKER:_ExecuteMultiMissions(missions)
     local hasSpawn = mission.spawn ~= nil
     local hasTargets = #mission.targets > 0
     local hasWaypoints = #mission.waypoints > 0
-    
+    local params = hasSpawn and mission.spawn.params or nil
+
+    -- Always show what was parsed
     if hasSpawn then
-      local params = mission.spawn.params
       feedbackMsg = feedbackMsg .. string.format("[OK] SPAWN: %s\n", mission.spawn.markerText)
-      feedbackMsg = feedbackMsg .. string.format("  Type: %s, Size: %d, Alt: %dft, Speed: %dkts\n",
-        params.type or "Unknown", params.size or 1, params.altitude or 25000, params.speed or 400)
+      feedbackMsg = feedbackMsg .. string.format("  Type: %s, Size: %s, Alt: %s, Speed: %s\n",
+        params.type or "[MISSING]", tostring(params.size or "[DEFAULT]"), tostring(params.altitude or "[DEFAULT]"), tostring(params.speed or "[DEFAULT]"))
+      if not params.type then
+        feedbackMsg = feedbackMsg .. "  [X] Bomber type missing or malformed!\n"
+      end
     else
       feedbackMsg = feedbackMsg .. "[X] SPAWN: NONE (required)\n"
       feedbackMsg = feedbackMsg .. string.format("  -> Place %s:SPAWN:B-1B (or :START:B-1B)\n", missionId)
     end
-    
+
     if hasWaypoints then
       feedbackMsg = feedbackMsg .. string.format("\n[OK] WAYPOINTS: %d found\n", #mission.waypoints)
       for _, wp in ipairs(mission.waypoints) do
         feedbackMsg = feedbackMsg .. string.format("  - %s\n", wp.markerText)
       end
+    else
+      feedbackMsg = feedbackMsg .. "\n[INFO] WAYPOINTS: NONE\n"
     end
-    
+
     if hasTargets then
       feedbackMsg = feedbackMsg .. string.format("\n[OK] TARGETS: %d found\n", #mission.targets)
       for _, tgt in ipairs(mission.targets) do
@@ -688,26 +705,26 @@ function BOMBER_MARKER:_ExecuteMultiMissions(missions)
       feedbackMsg = feedbackMsg .. "\n[X] TARGETS: NONE (required)\n"
       feedbackMsg = feedbackMsg .. string.format("  -> Place %s:TARGET1:RUNWAY:070\n", missionId)
     end
-    
+
     if mission.rtb then
       feedbackMsg = feedbackMsg .. string.format("\n[OK] RTB: %s\n", mission.rtb.markerText)
     end
-    
+
     -- Store feedback for this coalition
     if not feedbackMsgs[mission.coalition] then
       feedbackMsgs[mission.coalition] = {}
     end
     table.insert(feedbackMsgs[mission.coalition], feedbackMsg)
-    
+
     -- Execute if complete
-    if hasSpawn and hasTargets then
+    if hasSpawn and hasTargets and params and params.type then
       feedbackMsg = feedbackMsg .. "\n[!] LAUNCHING MISSION...\n"
       self:_ExecuteSingleMission(mission)
       executedCount = executedCount + 1
     else
-      feedbackMsg = feedbackMsg .. "\n[!] INCOMPLETE - Add missing markers\n"
+      feedbackMsg = feedbackMsg .. "\n[!] INCOMPLETE - Add missing or malformed markers\n"
     end
-    
+
     -- Update stored feedback with completion status
     feedbackMsgs[mission.coalition][#feedbackMsgs[mission.coalition]] = feedbackMsg
   end
@@ -727,10 +744,17 @@ end
 -- @param #table mission Mission data structure
 function BOMBER_MARKER:_ExecuteSingleMission(mission)
   local params = mission.spawn.params
-  local bomberType = params.type or "B-52H"
+  BOMBER_LOGGER:Debug("MARKER", "_ExecuteSingleMission: missionId='%s', params.type='%s'", tostring(mission.id), tostring(params and params.type))
+  if not params or not params.type then
+    self:_SendMessage(mission.coalition, string.format(
+      "[X] MARKER ERROR: No bomber type specified in marker for mission '%s'.\n\nCheck marker format: [MISSIONID]:SPAWN:[TYPE]...\nExample: BOMBER1:SPAWN:B-1B", tostring(mission.id)))
+    BOMBER_LOGGER:Error("MARKER", "No bomber type specified in marker for mission '%s'. Aborting mission creation.", tostring(mission.id))
+    return
+  end
+  local bomberType = params.type
   local flightSize = params.size or 1
   local coalition = mission.coalition
-  
+
   -- Validate bomber type
   if not BOMBER_PROFILE:Get(bomberType) then
     self:_SendMessage(coalition, string.format(
@@ -740,13 +764,13 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
     ))
     return
   end
-  
+
   -- Check template exists
   if _BOMBER_AVAILABLE_TEMPLATES and not _BOMBER_AVAILABLE_TEMPLATES[bomberType] then
     local templateName = string.gsub(bomberType, "[-]", "")
     templateName = string.gsub(templateName, "MS$", "")
     templateName = "BOMBER_" .. string.upper(templateName)
-    
+
     self:_SendMessage(coalition, string.format(
       "[X] TEMPLATE MISSING: %s\n\nAdd bomber template to mission editor", templateName))
     return
@@ -783,6 +807,8 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
   
   -- Add spawn point as first waypoint if no airbase (air start)
   if not startAirbase then
+    -- Set StartPos for air start missions so route building works
+    bomberMissionData.StartPos = mission.spawn.coordinate:GetVec3()
     table.insert(bomberMissionData.Waypoints, {
       Coordinate = mission.spawn.coordinate,
       Type = "TurningPoint",
@@ -802,7 +828,7 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
   -- Add targets
   for _, tgt in ipairs(mission.targets) do
     table.insert(bomberMissionData.Targets, {
-      Coordinate = tgt.coordinate,
+      coordinate = tgt.coordinate, -- always lowercase
       attackType = tgt.targetParams.attackType,
       attackHeading = tgt.targetParams.heading,
       Description = string.format("Target %d", tgt.sequence)
@@ -810,8 +836,8 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
   end
   
   -- Create and activate mission
-  local bomberMission = BOMBER_MISSION:New(missionName, bomberMissionData)
-  if bomberMission:Activate() then
+  local bomberMission = BOMBER_MISSION:New(bomberMissionData)
+  if bomberMission:Start() then
     BOMBER_LOGGER:Info("MARKER", "%s: Mission activated successfully", mission.id)
     
     -- Clean up markers if configured
@@ -2867,9 +2893,12 @@ end
 -- @return #boolean Success
 function BOMBER_MISSION:Start()
   BOMBER_LOGGER:Info("MISSION", "Starting mission: %s", self.Callsign)
-  
+  BOMBER_LOGGER:Debug("SPAWN", "Requested BomberType: %s", tostring(self.BomberType))
   -- Create template name from bomber type
   local templateName = self:_GetTemplateName()
+  BOMBER_LOGGER:Debug("SPAWN", "Derived template name: %s", tostring(templateName))
+  local templateGroupCheck = GROUP:FindByName(templateName)
+  BOMBER_LOGGER:Debug("SPAWN", "Template group exists in ME: %s", tostring(templateGroupCheck ~= nil))
   
   -- Create full mission data for bomber
   local bomberMissionData = {
@@ -2888,6 +2917,14 @@ function BOMBER_MISSION:Start()
     Mission = self, -- Reference back to mission
   }
   
+  -- Check that the requested template group exists in the mission
+  local templateGroup = GROUP:FindByName(templateName)
+  if not templateGroup then
+    BOMBER_LOGGER:Error("SPAWN", "Template group '%s' not found in mission. Mission aborted.", templateName)
+    MESSAGE:New(string.format("[X] TEMPLATE MISSING: %s\n\nAdd bomber template to mission editor as a late-activated group.", templateName), 30):ToCoalition(self.Coalition)
+    return false
+  end
+
   -- Create bomber
   self.Bomber = BOMBER:New(templateName, bomberMissionData)
   if not self.Bomber then
@@ -3341,8 +3378,13 @@ function BOMBER_MISSION:_CreateTargetZone()
   if self.Targets and #self.Targets > 0 then
     local firstTarget = self.Targets[1]
     local coord = firstTarget.coordinate
+    if not coord then
+      BOMBER_LOGGER:Error("SPAWN", "%s: No valid target coordinate for target zone (coord is nil). Check that at least one target marker is placed and parsed correctly.", tostring(self.Callsign))
+      return nil
+    end
     return ZONE_RADIUS:New(firstTarget.name or "Target", coord:GetVec2(), 2000) -- 2km radius
   end
+  BOMBER_LOGGER:Error("SPAWN", "%s: No targets found for target zone creation.", tostring(self.Callsign))
   return nil
 end
 
@@ -3444,31 +3486,42 @@ function BOMBER_MISSION:_AnalyzePlannedRoute()
   for i = 1, #self.Bomber.Route - 1 do
     local fromWP = self.Bomber.Route[i]
     local toWP = self.Bomber.Route[i + 1]
-    
     if fromWP and toWP and fromWP.x and toWP.x then
       local fromCoord = COORDINATE:New(fromWP.x, fromWP.alt or 0, fromWP.y)
       local toCoord = COORDINATE:New(toWP.x, toWP.alt or 0, toWP.y)
-      
       BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: Checking route leg %d->%d", i, i+1)
-      
+
+      -- Detailed per-SAM distance debug
+      for threatId, sam in pairs(samThreats) do
+        local samGroup = sam.Group
+        local samCoord = samGroup and samGroup:GetCoordinate() or nil
+        if samCoord then
+          -- Calculate minimum distance from route leg to SAM
+          local distToStart = fromCoord:Get2DDistance(samCoord)
+          local distToEnd = toCoord:Get2DDistance(samCoord)
+          -- Projected distance to segment (approximate)
+          local minDist = math.min(distToStart, distToEnd)
+          BOMBER_LOGGER:Debug("THREAT", "Leg %d->%d: SAM '%s' (%s) at %s: dist to start=%.1fm, dist to end=%.1fm, min=%.1fm", i, i+1, threatId, sam.SAMType, samCoord:ToStringLLDMS(), distToStart, distToEnd, minDist)
+        else
+          BOMBER_LOGGER:Debug("THREAT", "Leg %d->%d: SAM '%s' (%s) has no valid coordinate", i, i+1, threatId, sam.SAMType)
+        end
+      end
+
       local analysis = self.Bomber.SAMRouter:AnalyzeRoute(fromCoord, toCoord, samThreats)
-      
       BOMBER_LOGGER:Debug("THREAT", "Pre-spawn analysis: Leg %d result - Safe: %s, Threats: %d, Corridors: %d, Action: %s", 
         i, tostring(analysis.isSafe), #analysis.threats, #analysis.corridors, analysis.recommendation.action or "NONE")
-      
+
       if not analysis.isSafe and #analysis.threats > 0 then
         -- Record threats for reporting
         for _, threat in ipairs(analysis.threats) do
           table.insert(allThreats, threat)
         end
-        
         -- Check if we found safe corridors
         if #analysis.corridors > 0 then
           -- Best corridor is first (sorted by distance)
           local bestCorridor = analysis.corridors[1]
           BOMBER_LOGGER:Info("THREAT", "Pre-spawn: Found safe corridor for leg %d->%d (+%.1f km detour)", 
             i, i+1, bestCorridor.detourDistance / 1000)
-          
           -- Store corridor for route modification
           table.insert(routeModifications, {
             afterWaypointIndex = i,
