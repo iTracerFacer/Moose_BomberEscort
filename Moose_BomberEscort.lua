@@ -26,13 +26,13 @@ end
 --Naming Convention:
 --
 --B-17G -> Template name: BOMBER_B17G
+--B-24J -> Template name: BOMBER_B24J
 --B-52H -> Template name: BOMBER_B52H
 --B-1B -> Template name: BOMBER_B1B
 --Tu-95MS -> Template name: BOMBER_TU95
 --Tu-142 -> Template name: BOMBER_TU142
---Tu-22M3 -> Template name: BOMBER_TU22
+--Tu-22M3 -> Template name: BOMBER_TU22M3
 --Tu-160 -> Template name: BOMBER_TU160
---B-24J -> Template name: BOMBER_B24J
 
 ---
 -- LOGGING SYSTEM
@@ -221,6 +221,7 @@ BOMBER_MARKER.Config = {
   waypointKeyword = "WP",              -- Waypoint keyword (BOMBER1:WP1, BOMBER1:WP2, etc.)
   targetKeyword = "TARGET",            -- Target keyword (BOMBER1:TARGET1, etc.)
   rtbKeyword = "RTB",                  -- RTB keyword (BOMBER1:RTB)
+  resetKeyword = "RESET",              -- Reset/abort keyword (BOMBER1:RESET)
 }
 
 ---
@@ -330,8 +331,8 @@ BOMBER_PROFILE.DB = {
     HasDefensiveGuns = false,
     FormationTight = false,
     EvasionCapability = "Medium",
-    EscortRequired = BOMBER_ESCORT_CONFIG.RequireEscort,
-    MinEscorts = 1,  -- Minimum escort fighters required
+    EscortRequired = false, -- High-speed bomber, can operate independently
+    MinEscorts = 0,  -- Minimum escort fighters required
     MaxEscortDistance = 20000,
     ThreatTolerance = "Low",
   },
@@ -485,6 +486,86 @@ function BOMBER_PROFILE:Get(bomberType)
     local upperType = string.upper(profile.Type)
     if upperType == searchType then
       return profile
+    end
+  end
+  
+  return nil
+end
+
+--- Get the canonical profile key for a bomber type
+-- Resolves aliases to their proper profile keys
+-- @param #string bomberType The bomber type (can be alias like "B52" or full name like "B-52H")
+-- @return #string The canonical profile key (e.g., "B-52H") or nil if not found
+function BOMBER_PROFILE:GetCanonicalKey(bomberType)
+  if not bomberType then
+    return nil
+  end
+  
+  -- Normalize input: uppercase and remove spaces/hyphens for fuzzy matching
+  local normalized = string.upper(bomberType):gsub("[ %-]", "")
+  
+  -- Try exact match first
+  if BOMBER_PROFILE.DB[bomberType] then
+    return bomberType
+  end
+  
+  -- Define aliases (same as in Get function)
+  local aliases = {
+    -- Tu-95 Bear
+    ["TU95"] = "Tu-95",
+    ["TU95MS"] = "Tu-95",
+    ["TU95M"] = "Tu-95",
+    ["BEAR"] = "Tu-95",
+    
+    -- Tu-142 Bear-F
+    ["TU142"] = "Tu-142",
+    ["BEARF"] = "Tu-142",
+    
+    -- Tu-22M3 Backfire
+    ["TU22"] = "Tu-22M3",
+    ["TU22M"] = "Tu-22M3",
+    ["TU22M3"] = "Tu-22M3",
+    ["BACKFIRE"] = "Tu-22M3",
+    
+    -- Tu-160 Blackjack
+    ["TU160"] = "Tu-160",
+    ["BLACKJACK"] = "Tu-160",
+    ["WHITESWAN"] = "Tu-160",
+    
+    -- B-1B Lancer
+    ["B1"] = "B-1B",
+    ["B1B"] = "B-1B",
+    ["LANCER"] = "B-1B",
+    ["BONE"] = "B-1B",
+    
+    -- B-52H Stratofortress
+    ["B52"] = "B-52H",
+    ["B52H"] = "B-52H",
+    ["BUFF"] = "B-52H",
+    ["STRATOFORTRESS"] = "B-52H",
+    
+    -- B-17G Flying Fortress
+    ["B17"] = "B-17G",
+    ["B17G"] = "B-17G",
+    ["FORTRESS"] = "B-17G",
+    ["FLYINGFORTRESS"] = "B-17G",
+    
+    -- B-24J Liberator
+    ["B24"] = "B-24J",
+    ["B24J"] = "B-24J",
+    ["LIBERATOR"] = "B-24J",
+  }
+  
+  -- Check aliases
+  if aliases[normalized] then
+    return aliases[normalized]
+  end
+  
+  -- Try case-insensitive match against profile keys
+  local searchType = string.upper(bomberType)
+  for profileType, _ in pairs(BOMBER_PROFILE.DB) do
+    if string.upper(profileType) == searchType then
+      return profileType
     end
   end
   
@@ -709,7 +790,16 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers(coalitionSide)
           -- Check for RTB marker
           local isRTB = keyword == self.Config.rtbKeyword
           
-          if isSpawn or wpNum or targetNum or isRTB then
+          -- Check for RESET marker
+          local isReset = keyword == self.Config.resetKeyword
+          
+          if isReset then
+            -- Handle RESET immediately - don't add to missions table
+            BOMBER_LOGGER:Info("MARKER", "RESET marker found for %s", missionId)
+            self:_ResetMission(missionId, coalitionSide)
+            -- Remove the reset marker
+            trigger.action.removeMark(marker.idx)
+          elseif isSpawn or wpNum or targetNum or isRTB then
             -- Initialize mission structure if not exists
             if not missions[missionId] then
               missions[missionId] = {
@@ -800,15 +890,48 @@ function BOMBER_MARKER:_CheckMarkers(coalitionSide)
   local missions = self:_ScanForMultiMissionMarkers(coalitionSide)
   
   -- Execute all found missions
-  return self:_ExecuteMultiMissions(missions)
+  return self:_ExecuteMultiMissions(missions, coalitionSide)
 end
 
 --- Execute multiple missions from new marker format
 -- @param #BOMBER_MARKER self
 -- @param #table missions Table of missions keyed by mission ID
-function BOMBER_MARKER:_ExecuteMultiMissions(missions)
+-- @param #number coalitionSide Coalition side
+function BOMBER_MARKER:_ExecuteMultiMissions(missions, coalitionSide)
   local executedCount = 0
   local feedbackMsgs = {}
+  
+  -- Check if no missions found at all
+  local missionCount = 0
+  for _ in pairs(missions) do
+    missionCount = missionCount + 1
+  end
+  
+  if missionCount == 0 then
+    -- No markers found - show help message
+    local helpMsg = "[BOMBER ESCORT SYSTEM]\n\n"
+    helpMsg = helpMsg .. "No mission markers found.\n\n"
+    helpMsg = helpMsg .. "To create a mission, place markers on the F10 map:\n\n"
+    helpMsg = helpMsg .. "1. SPAWN marker (required):\n"
+    helpMsg = helpMsg .. "   BOMBER1:SPAWN:B-1B (or :START:)\n"
+    helpMsg = helpMsg .. "   Add optional params: :2:FL250:450\n\n"
+    helpMsg = helpMsg .. "2. TARGET marker (required):\n"
+    helpMsg = helpMsg .. "   BOMBER1:TARGET1\n"
+    helpMsg = helpMsg .. "   or: BOMBER1:TARGET1:RUNWAY:090\n\n"
+    helpMsg = helpMsg .. "3. Optional waypoints:\n"
+    helpMsg = helpMsg .. "   BOMBER1:WP1, BOMBER1:WP2, etc.\n\n"
+    helpMsg = helpMsg .. "4. Optional RTB:\n"
+    helpMsg = helpMsg .. "   BOMBER1:RTB\n\n"
+    helpMsg = helpMsg .. "5. To abort a mission:\n"
+    helpMsg = helpMsg .. "   BOMBER1:RESET\n\n"
+    helpMsg = helpMsg .. "Then use F10 > Launch Bomber Mission\n\n"
+    helpMsg = helpMsg .. "Available types: B-1B, B-52H, B-17G, B-24J\n"
+    helpMsg = helpMsg .. "                 Tu-95MS, Tu-142, Tu-22M3, Tu-160"
+    
+    MESSAGE:New(helpMsg, 20):ToCoalition(coalitionSide)
+    BOMBER_LOGGER:Info("MARKER", "No mission markers found - displayed help message")
+    return false
+  end
 
   for missionId, mission in pairs(missions) do
     local feedbackMsg = string.format("[MISSION REQUESTED] %s waypoints found.. verifying:\n\n", mission.baseId)
@@ -889,6 +1012,14 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
   local bomberType = params.type
   local flightSize = params.size or 1
   local coalition = mission.coalition
+  
+  -- Normalize bomber type to canonical profile key
+  local canonicalType = BOMBER_PROFILE:GetCanonicalKey(bomberType)
+  if canonicalType then
+    BOMBER_LOGGER:Debug("MARKER", "_ExecuteSingleMission: Normalized '%s' to canonical key '%s'", bomberType, canonicalType)
+    bomberType = canonicalType
+  end
+  
   -- Check for duplicate mission ID
   if _ACTIVE_MISSION_IDS[mission.id] then
     -- Find next available mission number
@@ -896,7 +1027,7 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
     self:_SendMessage(mission.coalition, string.format(
       "[X] DUPLICATE MISSION: Mission '%s' is already active!\n\nActive Missions: %s\n\nNext Available: BOMBER%d",
       mission.id, self:_ListActiveMissions(), nextNum))
-    BOMBER_LOGGER:Warning("MARKER", "Mission %s already exists, skipping duplicate", mission.id)
+    BOMBER_LOGGER:Warn("MARKER", "Mission %s already exists, skipping duplicate", mission.id)
     return
   end
 
@@ -1113,6 +1244,53 @@ function BOMBER_MARKER:_ListActiveMissions()
     return "None"
   end
   return table.concat(active, ", ")
+end
+
+--- Reset/abort an active mission
+-- @param #BOMBER_MARKER self
+-- @param #string missionId The mission ID to reset (e.g., "BLUE_BOMBER1")
+-- @param #number coalitionSide Coalition side
+function BOMBER_MARKER:_ResetMission(missionId, coalitionSide)
+  BOMBER_LOGGER:Info("MARKER", "Reset requested for mission: %s", missionId)
+  
+  -- Check if mission exists
+  if not _ACTIVE_MISSION_IDS[missionId] then
+    local msg = string.format("[RESET] Mission '%s' is not active.\n\nActive missions: %s", 
+      missionId, self:_ListActiveMissions())
+    MESSAGE:New(msg, 10):ToCoalition(coalitionSide)
+    BOMBER_LOGGER:Warn("MARKER", "Reset failed - mission %s not found", missionId)
+    return
+  end
+  
+  -- Find the mission in the mission manager
+  if _BOMBER_MISSION_MANAGER then
+    local missions = _BOMBER_MISSION_MANAGER:GetActiveMissions(coalitionSide)
+    for _, mission in ipairs(missions) do
+      if mission.MissionName == missionId then
+        BOMBER_LOGGER:Info("MARKER", "Found mission %s - initiating scrub", missionId)
+        
+        -- Scrub the mission (destroys bomber and cleans up)
+        if mission.Bomber then
+          mission.Bomber:_ScrubMission("Player reset via marker")
+        end
+        
+        -- Complete the mission as failed
+        mission:Complete(false)
+        
+        local msg = string.format("[RESET] Mission '%s' has been aborted and cleaned up.", missionId)
+        MESSAGE:New(msg, 10):ToCoalition(coalitionSide)
+        BOMBER_LOGGER:Info("MARKER", "Mission %s successfully reset", missionId)
+        return
+      end
+    end
+  end
+  
+  -- Fallback: Mission exists in _ACTIVE_MISSION_IDS but not in manager
+  -- This shouldn't happen, but clean it up anyway
+  _ACTIVE_MISSION_IDS[missionId] = nil
+  local msg = string.format("[RESET] Mission '%s' removed from active list (mission object not found).", missionId)
+  MESSAGE:New(msg, 10):ToCoalition(coalitionSide)
+  BOMBER_LOGGER:Warn("MARKER", "Reset cleaned up orphaned mission ID: %s", missionId)
 end
 
 ---
@@ -4034,8 +4212,9 @@ function BOMBER_MISSION:_GetTemplateName()
   -- Remove hyphens
   typeName = string.gsub(typeName, "[-]", "")
   
-  -- Remove MS suffix only (for Tu-95MS)
+  -- Remove MS suffix (for Tu-95MS) and M3 suffix (for Tu-22M3)
   typeName = string.gsub(typeName, "MS$", "")
+  typeName = string.gsub(typeName, "M3$", "")
   
   -- Return template name
   local templateName = "BOMBER_" .. string.upper(typeName)
