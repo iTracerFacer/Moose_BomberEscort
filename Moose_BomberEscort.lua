@@ -577,19 +577,13 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers(coalitionSide)
   local missions = {}
   
   -- Scan all markers
-  for i = 1, 1000 do
-    local markerData = world.getMarkPanels()
-    if markerData and markerData[i] then
-      local marker = markerData[i]
+  local markerData = world.getMarkPanels()
+  if markerData then
+    for markerId, marker in pairs(markerData) do
       local markerText = marker.text
       
-      -- Only process markers from the specified coalition
-      if marker.coalition ~= coalitionSide then
-        -- Skip markers from other coalitions
-        goto continue
-      end
-      
-      if markerText then
+      -- Only process markers placed by the specified coalition
+      if markerText and marker.coalitionId == coalitionSide then
         local upperText = string.upper(markerText)
         
         -- Parse marker format: MISSIONID:KEYWORD:PARAMS
@@ -693,7 +687,6 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers(coalitionSide)
         end
       end
     end
-    ::continue::
   end
   
   -- Sort waypoints and targets by sequence
@@ -703,6 +696,7 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers(coalitionSide)
   end
   
   return missions
+end
 end
 
 --- Check for new map markers and auto-execute missions
