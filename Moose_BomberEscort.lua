@@ -117,7 +117,7 @@ BOMBER_ESCORT_CONFIG = {
   LogLevel = BOMBER_LOG_LEVELS.DEBUG,  -- Logging verbosity (NONE=0, ERROR=1, WARN=2, INFO=3, DEBUG=4, TRACE=5)
   
   -- Message Settings
-  MessageDuration = 30,                -- Seconds messages display (default: 15)
+  MessageDuration = 45,                -- Seconds messages display (default: 15)
   
   -- Marker System
   AllowAirSpawnFallback = false,       -- Allow bombers to spawn in air if not on airbase (default: false)
@@ -513,13 +513,14 @@ function BOMBER_MARKER:_ParseTargetMarker(markerText)
   for part in string.gmatch(markerText, "[^:]+") do
     table.insert(parts, (string.gsub(part, "^%s*(.-)%s*$", "%1"))) -- Trim whitespace
   end
-  
-  -- Parse parts (skip first part which is TARGET1, TARGET2, etc.)
-  if #parts >= 2 and parts[2] ~= "" then 
-    result.attackType = string.upper(parts[2])
-  end
+
+  -- Skip first two parts: [MISSIONID], [TARGETn]
+  -- So attackType = parts[3], heading = parts[4]
   if #parts >= 3 and parts[3] ~= "" then
-    result.heading = tonumber(parts[3])
+    result.attackType = string.upper(parts[3])
+  end
+  if #parts >= 4 and parts[4] ~= "" then
+    result.heading = tonumber(parts[4])
   end
   
   return result
@@ -666,9 +667,9 @@ end
 function BOMBER_MARKER:_ExecuteMultiMissions(missions)
   local executedCount = 0
   local feedbackMsgs = {}
-  
+
   for missionId, mission in pairs(missions) do
-    local feedbackMsg = string.format("[MAP] MISSION %s MARKERS:\n\n", missionId)
+    local feedbackMsg = string.format("[MISSION REQUESTED] %s waypoints found.. verifying:\n\n", missionId)
     local hasSpawn = mission.spawn ~= nil
     local hasTargets = #mission.targets > 0
     local hasWaypoints = #mission.waypoints > 0
@@ -710,29 +711,20 @@ function BOMBER_MARKER:_ExecuteMultiMissions(missions)
       feedbackMsg = feedbackMsg .. string.format("\n[OK] RTB: %s\n", mission.rtb.markerText)
     end
 
-    -- Store feedback for this coalition
-    if not feedbackMsgs[mission.coalition] then
-      feedbackMsgs[mission.coalition] = {}
-    end
-    table.insert(feedbackMsgs[mission.coalition], feedbackMsg)
-
-    -- Execute if complete
+    -- Send feedback message IMMEDIATELY (before execution so it appears first)
+    -- Only show marker parsing results in feedbackMsg (no mission status)
     if hasSpawn and hasTargets and params and params.type then
-      feedbackMsg = feedbackMsg .. "\n[!] LAUNCHING MISSION...\n"
+      -- Send the [MISSION REQUESTED] message first
+      MESSAGE:New(feedbackMsg, 20):ToCoalition(mission.coalition)
+      
+      -- Now execute the mission (which may send SAM threat messages)
       self:_ExecuteSingleMission(mission)
       executedCount = executedCount + 1
     else
+      -- Mission incomplete - send feedback with error
       feedbackMsg = feedbackMsg .. "\n[!] INCOMPLETE - Add missing or malformed markers\n"
+      MESSAGE:New(feedbackMsg, 20):ToCoalition(mission.coalition)
     end
-
-    -- Update stored feedback with completion status
-    feedbackMsgs[mission.coalition][#feedbackMsgs[mission.coalition]] = feedbackMsg
-  end
-  
-  -- Send feedback to each coalition
-  for coalitionSide, msgs in pairs(feedbackMsgs) do
-    local combinedMsg = table.concat(msgs, "\n" .. string.rep("-", 40) .. "\n\n")
-    MESSAGE:New(combinedMsg, 20):ToCoalition(coalitionSide)
   end
   
   BOMBER_LOGGER:Info("MARKER", "Executed %d mission(s) from new format markers", executedCount)
@@ -835,11 +827,10 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
     })
   end
   
-  -- Create and activate mission
-  local bomberMission = BOMBER_MISSION:New(bomberMissionData)
-  if bomberMission:Start() then
+  -- Unified spawn path: always use _SpawnBomberMission for logging and mission creation
+  local success, bomberMission = self:_SpawnBomberMission(bomberMissionData)
+  if success then
     BOMBER_LOGGER:Info("MARKER", "%s: Mission activated successfully", mission.id)
-    
     -- Clean up markers if configured
     if self.Config.deleteMarkersAfterUse then
       for _, markerId in ipairs(mission.markerIds) do
@@ -848,7 +839,7 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
       BOMBER_LOGGER:Debug("MARKER", "%s: Cleaned up %d marker(s)", mission.id, #mission.markerIds)
     end
   else
-    BOMBER_LOGGER:Error("MARKER", "%s: Mission activation failed", mission.id)
+    BOMBER_LOGGER:Error("MARKER", "%s: Mission activation failed (%s)", mission.id, tostring(bomberMission))
   end
 end
 
@@ -2948,11 +2939,17 @@ function BOMBER_MISSION:Start()
     return false
   elseif #(threatAnalysis.threats or {}) > 0 then
     -- Threats detected but mission launching (either :FORCE or safe corridor found)
-    BOMBER_LOGGER:Info("SPAWN", "Launching with SAM threats present - %s", 
-      self.ForceLaunch and "FORCE override active" or "safe corridor found")
-    
-    -- Send advisory to coalition
-    MESSAGE:New(threatAnalysis.message, 25):ToCoalition(self.Coalition)
+    if self.ForceLaunch then
+      -- FORCE override - send professional override acknowledgment
+      BOMBER_LOGGER:Info("SPAWN", "Launching with SAM threats present - FORCE override active")
+      
+      local forceMsg = self:_BuildForceLaunchMessage(threatAnalysis.threats)
+      MESSAGE:New(forceMsg, 25):ToCoalition(self.Coalition)
+    elseif threatAnalysis.corridorsApplied and threatAnalysis.corridorsApplied > 0 then
+      -- Safe corridor found - send route modification notice
+      BOMBER_LOGGER:Info("SPAWN", "Launching with SAM threats present - safe corridor found")
+      MESSAGE:New(threatAnalysis.message, 25):ToCoalition(self.Coalition)
+    end
   end
   
   -- Spawn bomber
@@ -3022,6 +3019,9 @@ function BOMBER_MISSION:_BuildRoute()
   -- Track which waypoints correspond to which targets (for dynamic TargetCoord updates)
   local targetWaypointMapping = {}
   
+  -- Track ingress waypoints for safe egress routing (fly back the way we came)
+  local ingressWaypoints = {}
+  
   table.insert(waypoints, startCoord:WaypointAirTakeOffParking())
   
   -- Waypoint 2+: Route waypoints (BOMBER2, BOMBER3, etc.)
@@ -3030,7 +3030,9 @@ function BOMBER_MISSION:_BuildRoute()
   for _, waypointData in ipairs(self.RouteWaypoints) do
     -- RouteWaypoints contains {coordinate=COORDINATE, sequence=number}
     local wpCoord = waypointData.coordinate:SetAltitude(cruiseAltMeters)
-    table.insert(waypoints, wpCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+    local wp = wpCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS)
+    table.insert(waypoints, wp)
+    table.insert(ingressWaypoints, wpCoord) -- Store for egress reversal
     BOMBER_LOGGER:Debug("ROUTE", "Added route waypoint %d at altitude %.0f m", waypointData.sequence, cruiseAltMeters)
   end
   
@@ -3275,15 +3277,16 @@ function BOMBER_MISSION:_BuildRoute()
           BOMBER_LOGGER:Debug("ROUTE", "Added custom egress waypoint %d at %s", i, egressCoord:ToStringLLDMS())
         end
       else
-        -- Standard egress waypoint after last target
-        if not isRunwayTarget then
-          local egressCoord = targetCoord:Translate(30000, 0):SetAltitude(cruiseAltMeters)
+        -- SAFE EGRESS: Reverse through ingress waypoints (fly back the way we came)
+        -- This ensures we use the same SAM-safe corridor on egress as we did on ingress
+        BOMBER_LOGGER:Info("ROUTE", "EGRESS: Reversing through %d ingress waypoints for safe return", #ingressWaypoints)
+        
+        -- Reverse iterate through ingress waypoints
+        for i = #ingressWaypoints, 1, -1 do
+          local egressCoord = ingressWaypoints[i]:SetAltitude(cruiseAltMeters)
           table.insert(waypoints, egressCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
-        else
-          local finalEgressCoord = targetCoord:Translate(25000, (ipHeading + 180) % 360):SetAltitude(cruiseAltMeters)
-          table.insert(waypoints, finalEgressCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
+          BOMBER_LOGGER:Debug("ROUTE", "Added egress waypoint (reversed ingress %d) at %s", i, egressCoord:ToStringLLDMS())
         end
-        BOMBER_LOGGER:Debug("ROUTE", "Added standard egress waypoint")
       end
     else
       -- Not the last target, add transition egress between targets
@@ -3611,6 +3614,62 @@ function BOMBER_MISSION:_ApplyCorridorModifications(originalRoute, modifications
   return newRoute
 end
 
+--- Build professional force launch advisory message
+-- @param #BOMBER_MISSION self
+-- @param #table threats List of SAM threats
+-- @return #string Formatted military advisory message
+function BOMBER_MISSION:_BuildForceLaunchMessage(threats)
+  local msg = "✓ MISSION OVERRIDE APPROVED - LAUNCHING\n\n"
+  
+  msg = msg .. "OPERATIONAL STATUS:\n"
+  msg = msg .. "├─ Force authorization acknowledged\n"
+  msg = msg .. "├─ Mission block removed by command authority\n"
+  msg = msg .. "└─ Strike package departing\n"
+  msg = msg .. "\n"
+  
+  msg = msg .. "THREAT ENVIRONMENT:\n"
+  
+  -- Group threats by type
+  local threatsByType = {}
+  for _, threat in ipairs(threats) do
+    local samType = threat.samType
+    if not threatsByType[samType] then
+      threatsByType[samType] = {count = 0, minDist = 999999}
+    end
+    threatsByType[samType].count = threatsByType[samType].count + 1
+    if threat.distanceToRoute < threatsByType[samType].minDist then
+      threatsByType[samType].minDist = threat.distanceToRoute
+    end
+  end
+  
+  local threatList = {}
+  for samType, data in pairs(threatsByType) do
+    table.insert(threatList, {type = samType, count = data.count, dist = data.minDist})
+  end
+  table.sort(threatList, function(a, b) return a.dist < b.dist end)
+  
+  for i, threat in ipairs(threatList) do
+    local distKm = math.floor(threat.dist / 1000)
+    local distNm = math.floor(distKm * 0.539957)
+    if threat.count > 1 then
+      msg = msg .. string.format("├─ %dx %s sites (%d nm from route)\n", threat.count, threat.type, distNm)
+    else
+      msg = msg .. string.format("├─ %s site (%d nm from route)\n", threat.type, distNm)
+    end
+  end
+  
+  msg = msg .. "\n"
+  msg = msg .. "TACTICAL ADVISORY:\n"
+  msg = msg .. "• SEAD/DEAD escort strongly recommended\n"
+  msg = msg .. "• Electronic warfare support advised\n"
+  msg = msg .. "• Mission will abort if radar lock detected\n"
+  msg = msg .. "• Expect active countermeasure deployment\n"
+  msg = msg .. "\n"
+  msg = msg .. "Package is cleared hot. Good hunting."
+  
+  return msg
+end
+
 --- Build formatted SAM threat report message
 -- @param #BOMBER_MISSION self
 -- @param #table threats List of SAM threats
@@ -3729,13 +3788,20 @@ function BOMBER_MISSION:_CreatePlayerMenu()
   -- Create coalition-specific menu
   local coalitionName = self.Coalition == coalition.side.BLUE and "BLUE" or "RED"
   
+  -- Check if MenuManager exists for integration
+  local useMenuManager = (MenuManager ~= nil)
+  
   -- Main menu path
   if not _BOMBER_PLAYER_MENUS then
     _BOMBER_PLAYER_MENUS = {}
   end
   
   if not _BOMBER_PLAYER_MENUS[self.Coalition] then
-    _BOMBER_PLAYER_MENUS[self.Coalition] = MENU_COALITION:New(self.Coalition, "Bomber Missions")
+    if useMenuManager then
+      _BOMBER_PLAYER_MENUS[self.Coalition] = MenuManager.CreateCoalitionMenu(self.Coalition, "Bomber Missions")
+    else
+      _BOMBER_PLAYER_MENUS[self.Coalition] = MENU_COALITION:New(self.Coalition, "Bomber Missions")
+    end
   end
   
   -- Mission submenu
