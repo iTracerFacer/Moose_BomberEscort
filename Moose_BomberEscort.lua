@@ -18,6 +18,11 @@ if not _BOMBER_SPAWN_OBJECTS then
   _BOMBER_SPAWN_OBJECTS = {}
 end
 
+-- Active mission IDs to prevent duplicates
+if not _ACTIVE_MISSION_IDS then
+  _ACTIVE_MISSION_IDS = {}
+end
+
 --Naming Convention:
 --
 --B-17G -> Template name: BOMBER_B17G
@@ -743,9 +748,16 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
     BOMBER_LOGGER:Error("MARKER", "No bomber type specified in marker for mission '%s'. Aborting mission creation.", tostring(mission.id))
     return
   end
-  local bomberType = params.type
-  local flightSize = params.size or 1
-  local coalition = mission.coalition
+  -- Check for duplicate mission ID
+  if _ACTIVE_MISSION_IDS[mission.id] then
+    -- Find next available mission number
+    local nextNum = self:_GetNextAvailableMissionNumber()
+    self:_SendMessage(mission.coalition, string.format(
+      "[X] DUPLICATE MISSION: Mission '%s' is already active!\n\nActive Missions: %s\n\nNext Available: BOMBER%d",
+      mission.id, self:_ListActiveMissions(), nextNum))
+    BOMBER_LOGGER:Warning("MARKER", "Mission %s already exists, skipping duplicate", mission.id)
+    return
+  end
 
   -- Validate bomber type
   if not BOMBER_PROFILE:Get(bomberType) then
@@ -898,6 +910,9 @@ function BOMBER_MARKER:_SpawnBomberMission(missionData)
       _BOMBER_MARKER_SYSTEM.LastMissionData = _BOMBER_MARKER_SYSTEM.LastMissionData or {}
       _BOMBER_MARKER_SYSTEM.LastMissionData[missionData.Coalition] = missionData
       
+      -- Mark mission as active
+      _ACTIVE_MISSION_IDS[missionData.MissionName] = true
+      
       return true, mission
     else
       return false, "Failed to start mission"
@@ -913,6 +928,37 @@ end
 -- @param #string message The message text
 function BOMBER_MARKER:_SendMessage(coalitionSide, message)
   trigger.action.outTextForCoalition(coalitionSide, "BOMBER CONTROL: " .. message, BOMBER_ESCORT_CONFIG.MessageDuration)
+end
+
+--- Get the next available mission number
+-- @param #BOMBER_MARKER self
+-- @return #number Next available mission number
+function BOMBER_MARKER:_GetNextAvailableMissionNumber()
+  local maxNum = 0
+  for missionId in pairs(_ACTIVE_MISSION_IDS) do
+    local num = string.match(missionId, "BOMBER(%d+)")
+    if num then
+      num = tonumber(num)
+      if num > maxNum then
+        maxNum = num
+      end
+    end
+  end
+  return maxNum + 1
+end
+
+--- List active missions
+-- @param #BOMBER_MARKER self
+-- @return #string Comma-separated list of active mission IDs
+function BOMBER_MARKER:_ListActiveMissions()
+  local active = {}
+  for missionId in pairs(_ACTIVE_MISSION_IDS) do
+    table.insert(active, missionId)
+  end
+  if #active == 0 then
+    return "None"
+  end
+  return table.concat(active, ", ")
 end
 
 ---
@@ -2808,6 +2854,9 @@ function BOMBER_MISSION_MANAGER:UnregisterMission(mission)
     })
     BOMBER_LOGGER:Info("MISSION", "Mission %d completed: %s", mission.MissionID, mission.Callsign)
     
+    -- Remove from active mission IDs
+    _ACTIVE_MISSION_IDS[mission.MissionName] = nil
+    
     -- Memory management: Prune completed missions list to prevent unbounded growth
     -- Keep only last 50 completed missions
     if #self.CompletedMissions > 50 then
@@ -2850,6 +2899,7 @@ function BOMBER_MISSION:New(missionData)
   
   self.MissionData = missionData
   self.Coalition = missionData.Coalition
+  self.MissionName = missionData.MissionName
   self.BomberType = missionData.BomberType or "B-52H"
   self.FlightSize = missionData.FlightSize or 2
   self.Callsign = self:_GenerateCallsign()
@@ -4104,6 +4154,27 @@ BOMBER.States = {
   DESTROYED = "Destroyed"
 }
 
+--- Add missing FSM transition methods
+function BOMBER:__Cruise(delay)
+  -- State change handled by FSM
+end
+
+function BOMBER:__ApproachTarget(delay)
+  -- State change handled by FSM
+end
+
+function BOMBER:__BeginAttack(delay)
+  -- State change handled by FSM
+end
+
+function BOMBER:__BombsAway(delay)
+  -- State change handled by FSM
+end
+
+function BOMBER:__ReturnToBase(delay)
+  -- State change handled by FSM
+end
+
 --- Escort loss messages - 3 escalating levels with 15 variations each
 BOMBER.EscortLossMessages = {
   -- Level 1: Casual check-in (just noticed escort missing)
@@ -4516,7 +4587,7 @@ function BOMBER:New(templateName, missionData)
   self:AddTransition(BOMBER.States.TAKING_OFF, "BeginFormUp", BOMBER.States.FORMING_UP)
   self:AddTransition(BOMBER.States.TAKING_OFF, "BeginClimb", BOMBER.States.CLIMBING)  -- Direct to climbing when escort not required
   self:AddTransition(BOMBER.States.FORMING_UP, "BeginClimb", BOMBER.States.CLIMBING)
-  self:AddTransition(BOMBER.States.CLIMBING, "ReachCruise", BOMBER.States.CRUISE)
+  self:AddTransition(BOMBER.States.CLIMBING, "Cruise", BOMBER.States.CRUISE)
   self:AddTransition(BOMBER.States.CRUISE, "ApproachTarget", BOMBER.States.PRE_ATTACK)
   self:AddTransition(BOMBER.States.PRE_ATTACK, "BeginAttack", BOMBER.States.ATTACKING)
   self:AddTransition(BOMBER.States.ATTACKING, "BombsAway", BOMBER.States.EGRESSING)
@@ -4524,6 +4595,9 @@ function BOMBER:New(templateName, missionData)
   self:AddTransition({BOMBER.States.EGRESSING, BOMBER.States.ABORTING}, "ReturnToBase", BOMBER.States.RTB)
   self:AddTransition(BOMBER.States.RTB, "Land", BOMBER.States.LANDED)
   self:AddTransition("*", "Destroy", BOMBER.States.DESTROYED)
+  
+  -- Start the FSM
+  self:Start()
   
   -- Initialize subsystems
   self.EscortMonitor = nil
@@ -4549,7 +4623,7 @@ function BOMBER:Spawn()
       return false
     end
     BOMBER_LOGGER:Info("ESCORT", "%s: Escort required - checking for ground escorts", self.Callsign)
-    self:__WaitForEscort(2)
+    self:WaitForEscort(2)
     return true
   end
 
@@ -4560,7 +4634,7 @@ function BOMBER:Spawn()
   BOMBER_LOGGER:Info("ESCORT", "%s: Escort not required - beginning mission immediately", self.Callsign)
   self.RouteStartAuthorized = true
   self:_StartRoute("Escort not required")
-  self:__StartEngines(2)
+  self:StartEngines(2)
   return true
 end
 
@@ -5295,7 +5369,7 @@ function BOMBER:_MonitorEngineStart()
         BOMBER_LOGGER:Warn("FSM", "%s: CRITICAL - Aircraft flying at %.0fft/%.0fkts but in wrong state (%s) -> forcing CLIMBING", 
           self.Callsign, altitude * 3.28084, velocity, self.CurrentState)
         self:_BroadcastMessage(string.format("%s: Systems online - continuing to target.", self.Callsign))
-        self:__BeginClimb(0.5)
+        self:BeginClimb(0.5)
         hasTransitionedToClimbing = true
         hasTransitionedToEngineStarting = true
         hasTransitionedToTaxiing = true
@@ -5312,7 +5386,7 @@ function BOMBER:_MonitorEngineStart()
           self.Callsign, altitude * 3.28084, velocity)
         self:_BroadcastMessage(string.format("%s: Airborne at %.0f ft - continuing climb to cruise altitude.", 
           self.Callsign, altitude * 3.28084))
-        self:__BeginClimb(0.5)
+        self:BeginClimb(0.5)
         hasTransitionedToClimbing = true
         -- Skip other ground-phase transitions since we're already airborne
         hasTransitionedToEngineStarting = true
@@ -5329,7 +5403,7 @@ function BOMBER:_MonitorEngineStart()
           self.Callsign, altitude * 3.28084, velocity)
         self:_BroadcastMessage(string.format("%s: Airborne at %.0f ft - proceeding to cruise altitude.", 
           self.Callsign, altitude * 3.28084))
-        self:__BeginClimb(0.5)
+        self:BeginClimb(0.5)
         hasTransitionedToClimbing = true
         -- Skip other ground-phase transitions since we're already airborne
         hasTransitionedToTaxiing = true
@@ -5339,7 +5413,7 @@ function BOMBER:_MonitorEngineStart()
     
     -- HOLDING -> ENGINE_STARTING (when route commanded and engines starting)
     if not skipGroundTransitions and self:Is(BOMBER.States.HOLDING) and self.EngineStartTime and not hasTransitionedToEngineStarting then
-      self:__StartEngines(0.5)
+      self:StartEngines(0.5)
       BOMBER_LOGGER:Info("FSM", "%s: Transitioning HOLDING -> ENGINE_STARTING", self.Callsign)
       hasTransitionedToEngineStarting = true
     end
@@ -5360,7 +5434,7 @@ function BOMBER:_MonitorEngineStart()
         if velocity > 3 or totalDistanceMoved > 30 then  -- Either speed OR moved 30+ meters
           BOMBER_LOGGER:Info("FSM", "%s: Sustained movement confirmed (%.1f kts, %.0fm moved, AGL=%.0fm) -> TAXIING", 
             self.Callsign, velocity, totalDistanceMoved, altitudeAGL)
-          self:__BeginTaxi(0.5)
+          self:BeginTaxi(0.5)
           hasTransitionedToTaxiing = true
         end
       end
@@ -5373,7 +5447,7 @@ function BOMBER:_MonitorEngineStart()
       local altitudeAGL = altitude - groundAlt
       if velocity >= 50 and altitudeAGL < 100 then
         BOMBER_LOGGER:Info("FSM", "%s: Takeoff speed reached (%.1f kts, AGL=%.0fm) -> TAKING_OFF", self.Callsign, velocity, altitudeAGL)
-        self:__Takeoff(0.5)
+        self:Takeoff(0.5)
         hasTransitionedToTakeoff = true
       end
     end
@@ -5383,11 +5457,11 @@ function BOMBER:_MonitorEngineStart()
       if altitude >= 500 then  -- 500ft AGL = definitely airborne
         if self.Profile.EscortRequired then
           BOMBER_LOGGER:Info("FSM", "%s: Airborne (%.0f ft) -> FORMING_UP", self.Callsign, altitude * 3.28084)
-          self:__BeginFormUp(0.5)
+          self:BeginFormUp(0.5)
           hasTransitionedToFormingUp = true
         else
           BOMBER_LOGGER:Info("FSM", "%s: Airborne (%.0f ft) | Escort not required -> CLIMBING", self.Callsign, altitude * 3.28084)
-          self:__BeginClimb(0.5)
+          self:BeginClimb(0.5)
           hasTransitionedToFormingUp = true
           hasTransitionedToClimbing = true
         end
@@ -5396,7 +5470,7 @@ function BOMBER:_MonitorEngineStart()
 
     -- FORMING_UP -> CLIMBING handled elsewhere (escort monitor) but ensure hot start edge cases
     if not skipGroundTransitions and self:Is(BOMBER.States.FORMING_UP) and not self.Profile.EscortRequired and not hasTransitionedToClimbing then
-      self:__BeginClimb(0.5)
+      self:BeginClimb(0.5)
       hasTransitionedToClimbing = true
     end
     
@@ -5432,7 +5506,7 @@ function BOMBER:_MonitorEngineStart()
     if self:Is(BOMBER.States.CLIMBING) then
       if altitude >= (cruiseAltMeters * 0.9) then  -- Within 10% of cruise altitude
         BOMBER_LOGGER:Info("FSM", "%s: Reached cruise altitude (%.0f ft) -> CRUISE", self.Callsign, altitude * 3.28084)
-        self:__ReachCruise(0.5)
+        self:Cruise(0.5)
       end
     end
     
@@ -5446,7 +5520,7 @@ function BOMBER:_MonitorEngineStart()
           if not self:Is(BOMBER.States.BLOCKED) then
             BOMBER_LOGGER:Warn("FSM", "%s: WARNING - Bomber stuck/blocked (stationary for %.0f seconds) -> BLOCKED", 
               self.Callsign, stuckDuration)
-            self:__Blocked(0.5)
+            self:Blocked(0.5)
             stuckWarningIssued = true
           end
         end
@@ -5476,7 +5550,7 @@ function BOMBER:_MonitorEngineStart()
           end
           
           -- Clear blockage - will transition back to TAXIING via FSM rule
-          self:__ClearBlockage(0.5)
+          self:ClearBlockage(0.5)
           stuckWarningIssued = false
           
           -- Reset stuck tracking since we're moving again
@@ -5607,7 +5681,7 @@ function BOMBER:_MonitorLanding()
           end
           
           -- Transition to LANDED state
-          self:__Landed(0.5)
+          self:Land(0.5)
           return
         else
           -- Still waiting for sustained condition
@@ -6172,7 +6246,7 @@ function BOMBER:_StartRTBMonitor()
               self.LandingMonitor = nil
             end
             
-            self:__Despawn(1)
+            self:Destroy(1)
             return
           end
         else
@@ -6332,6 +6406,16 @@ function BOMBER:_MonitorWaypoints()
     
     BOMBER_LOGGER:Trace("ROUTE", "%s: Current position: %s", self.Callsign, currentPos:ToStringLLDMS())
     
+    -- CLIMBING -> CRUISE (reached cruise altitude)
+    if self:Is(BOMBER.States.CLIMBING) then
+      local currentAlt = currentPos.y * 3.28084  -- meters to feet
+      local cruiseAlt = self.CruiseAlt or (self.Profile and self.Profile.CruiseAlt) or 20000
+      if currentAlt >= cruiseAlt - 500 then  -- within 500 ft of cruise altitude
+        BOMBER_LOGGER:Info("FSM", "%s: Reached cruise altitude (%.0f ft) -> CRUISE", self.Callsign, currentAlt)
+        self:Cruise(0.5)
+      end
+    end
+    
     -- Check distance to next waypoint
     if self.CurrentWaypointIndex <= totalWP then
       local nextWP = self.Route[self.CurrentWaypointIndex]
@@ -6379,13 +6463,13 @@ function BOMBER:_MonitorWaypoints()
         -- CRUISE -> PRE_ATTACK when within 50km of target
         if self:Is(BOMBER.States.CRUISE) and distToBomb < 50000 then
           BOMBER_LOGGER:Info("FSM", "%s: Approaching target (%.1f km) -> PRE_ATTACK", self.Callsign, distToBomb/1000)
-          self:__ApproachTarget(0.5)
+          self:ApproachTarget(0.5)
         end
         
         -- PRE_ATTACK -> ATTACKING when within 15km of target
         if self:Is(BOMBER.States.PRE_ATTACK) and distToBomb < 15000 then
           BOMBER_LOGGER:Info("FSM", "%s: At attack range (%.1f km) -> ATTACKING", self.Callsign, distToBomb/1000)
-          self:__BeginAttack(0.5)
+          self:BeginAttack(0.5)
         end
       else
         BOMBER_LOGGER:Error("ROUTE", "%s: Bombing waypoint %d has no coordinates!", self.Callsign, self.BombingWaypointIndex)
@@ -6403,12 +6487,12 @@ function BOMBER:_MonitorWaypoints()
        self:Is(BOMBER.States.ATTACKING) then
       BOMBER_LOGGER:Info("COMBAT", "%s: Weapons released %.0fs ago and past bombing area (current: %d, bombing was: %d) - transitioning to EGRESSING", 
         self.Callsign, timer.getTime() - self.WeaponsReleaseStartTime, self.CurrentWaypointIndex, self.BombingWaypointIndex)
-      self:__BombsAway(0)
+      self:BombsAway(0)
     end
     
     -- RTB when all waypoints complete
     if self.CurrentWaypointIndex > totalWP and self:Is(BOMBER.States.EGRESSING) then
-      self:__ReturnToBase(0)
+      self:ReturnToBase(0)
     end
     
   end, {}, 5, 5)  -- Check every 5 seconds instead of 10 for more responsive state changes
@@ -6445,7 +6529,7 @@ function BOMBER:_SetupEventHandlers()
   self:HandleEvent(EVENTS.Land, function(self, EventData)
     if EventData.IniGroup and EventData.IniGroup:GetName() == self.Group:GetName() then
       if self:Is(BOMBER.States.RTB) or self:Is(BOMBER.States.EGRESSING) then
-        self:__Land(2)
+        self:Land(2)
       end
     end
   end)
@@ -7225,7 +7309,7 @@ function BOMBER:OnEscortArrived(escortCount)
       
       -- Continue abort, don't resume
       if not self:Is(BOMBER.States.RTB) then
-        self:__ReturnToBase(0)
+        self:ReturnToBase(0)
       end
       return
     end
@@ -7305,7 +7389,7 @@ function BOMBER:OnFormUpComplete(escortCount)
 
   BOMBER_LOGGER:Info("ESCORT", "%s: Form-up complete with %d escort(s)", self.Callsign, escortCount)
   self:_BroadcastMessage(string.format("%s: [OK] Escorts joined. Continuing climb to cruise.", self.Callsign))
-  self:__BeginClimb(0.5)
+  self:BeginClimb(0.5)
 end
 
 --- Abort mission due to lack of escort during form-up/in-flight
@@ -7708,7 +7792,7 @@ function BOMBER:OnThreatDetected(threatData)
           BOMBER_LOGGER:Info("THREAT", "%s: DECISION - ABORT (grace period expired): %s", self.Callsign, abortReason)
           self:_BroadcastMessage(string.format("%s: [X] GRACE PERIOD EXPIRED: %s - ABORTING MISSION!", 
             self.Callsign, abortReason:upper()))
-          self:__Abort(0)
+          self:Abort(0)
         end
       end
     elseif not self.Profile.EscortRequired then
