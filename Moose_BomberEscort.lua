@@ -582,8 +582,8 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers(coalitionSide)
     for markerId, marker in pairs(markerData) do
       local markerText = marker.text
       
-      -- Only process markers placed by the specified coalition
-      if markerText and marker.coalitionId == coalitionSide then
+      -- Process all markers (coalition separation handled by mission ID prefix)
+      if markerText then
         local upperText = string.upper(markerText)
         
         -- Parse marker format: MISSIONID:KEYWORD:PARAMS
@@ -696,7 +696,6 @@ function BOMBER_MARKER:_ScanForMultiMissionMarkers(coalitionSide)
   end
   
   return missions
-end
 end
 
 --- Check for new map markers and auto-execute missions
@@ -2935,6 +2934,28 @@ function BOMBER_MISSION_MANAGER:UnregisterMission(mission)
         table.remove(self.CompletedMissions, 1)
       end
       BOMBER_LOGGER:Debug("MISSION", "Pruned %d old missions from CompletedMissions list (keeping last 50)", toRemove)
+    end
+    
+    -- Memory management: Prune old SPAWN objects to prevent unbounded growth
+    -- Keep only spawn objects that are still in use by active missions
+    local activeTemplates = {}
+    for _, activeMission in pairs(self.ActiveMissions) do
+      if activeMission.BomberType then
+        activeTemplates[activeMission.BomberType] = true
+      end
+    end
+    
+    -- Remove unused spawn objects from global cache
+    local pruneCount = 0
+    for templateName, _ in pairs(_BOMBER_SPAWN_OBJECTS) do
+      if not activeTemplates[templateName] then
+        _BOMBER_SPAWN_OBJECTS[templateName] = nil
+        pruneCount = pruneCount + 1
+      end
+    end
+    
+    if pruneCount > 0 then
+      BOMBER_LOGGER:Debug("MISSION", "Pruned %d unused SPAWN objects from global cache", pruneCount)
     end
   end
 end
