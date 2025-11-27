@@ -498,19 +498,26 @@ function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed
 end
 
 --- Parse target marker text for attack parameters
--- Format: TARGET1:TYPE:HEADING
+-- Format: TARGET1[:TARGET_TYPE][:ATTACK_TYPE][:HEADING][:ALTITUDE]
 -- Examples: 
 --   TARGET1 - Standard attack
 --   TARGET1:RUNWAY - Runway carpet bombing (auto direction)
 --   TARGET1:RUNWAY:090 - Runway from heading 090
---   TARGET1:BRIDGE - Bridge attack
+--   TARGET1:CARPET:090 - Area carpet bombing from heading 090
+--   TARGET1:FACTORY - Factory attack
+--   TARGET1:FACTORY:CARPET - Factory with carpet bombing
+--   TARGET1:FACTORY:CARPET:FL150 - Factory carpet at FL150
+--   TARGET1:FUELTANK:090 - Fuel tank from heading 090
+--   TARGET1:BUNKER:CARPET:FL200 - Bunker carpet at FL200
 -- @param #BOMBER_MARKER self
 -- @param #string markerText The text from the map marker
--- @return #table Parsed parameters: {attackType, heading}
+-- @return #table Parsed parameters: {targetType, attackType, heading, altitude}
 function BOMBER_MARKER:_ParseTargetMarker(markerText)
   local result = {
-    attackType = "AUTO", -- AUTO, RUNWAY, BRIDGE, BUILDING
+    targetType = nil, -- Cosmetic target type (FACTORY, BUNKER, etc.)
+    attackType = "AUTO", -- AUTO, RUNWAY, CARPET, or other point types
     heading = nil, -- Optional specific attack heading
+    altitude = nil, -- Optional altitude override (e.g., "FL150")
     originalText = markerText
   }
   
@@ -520,13 +527,26 @@ function BOMBER_MARKER:_ParseTargetMarker(markerText)
     table.insert(parts, (string.gsub(part, "^%s*(.-)%s*$", "%1"))) -- Trim whitespace
   end
 
-  -- Skip first two parts: [MISSIONID], [TARGETn]
-  -- So attackType = parts[3], heading = parts[4]
-  if #parts >= 3 and parts[3] ~= "" then
-    result.attackType = string.upper(parts[3])
-  end
-  if #parts >= 4 and parts[4] ~= "" then
-    result.heading = tonumber(parts[4])
+  -- Parse parameters starting from parts[3] (after MISSIONID:TARGETn)
+  for i = 3, #parts do
+    local part = string.upper(parts[i])
+    if part == "" then
+      -- Skip empty parts
+    elseif tonumber(part) then
+      -- Numeric value: treat as heading (0-360)
+      if not result.heading then
+        result.heading = tonumber(part)
+      end
+    elseif string.match(part, "^FL%d+") then
+      -- FLxxx format: altitude
+      result.altitude = part
+    elseif part == "RUNWAY" or part == "CARPET" or part == "AUTO" then
+      -- Known attack types
+      result.attackType = part
+    else
+      -- Everything else: target type (FACTORY, BUNKER, etc.)
+      result.targetType = part
+    end
   end
   
   return result
@@ -840,6 +860,8 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
       coordinate = tgt.coordinate, -- always lowercase
       attackType = tgt.targetParams.attackType,
       attackHeading = tgt.targetParams.heading,
+      targetType = tgt.targetParams.targetType,
+      altitude = tgt.targetParams.altitude,
       Description = string.format("Target %d", tgt.sequence)
     })
   end
@@ -3074,6 +3096,19 @@ function BOMBER_MISSION:_BuildRoute()
   -- Build waypoint list
   local waypoints = {}
   
+  -- Helper function to parse altitude string
+  local function parseAltitude(altStr, defaultMeters)
+    if not altStr then return defaultMeters end
+    if string.match(altStr, "^FL(%d+)$") then
+      local fl = tonumber(string.match(altStr, "^FL(%d+)$"))
+      return fl * 100 * 0.3048 -- FL to feet to meters
+    elseif tonumber(altStr) then
+      return tonumber(altStr) * 0.3048 -- Assume feet if number
+    else
+      return defaultMeters
+    end
+  end
+  
   -- Waypoint 1: Start (takeoff)
   local cruiseAlt = self.CruiseAlt or profile.CruiseAlt
   local cruiseSpeed = self.CruiseSpeed or profile.CruiseSpeed
@@ -3109,10 +3144,12 @@ function BOMBER_MISSION:_BuildRoute()
     local targetName = targetData.name or string.format("Target %d", targetIndex)
     local attackType = targetData.attackType or "AUTO"
     local attackHeading = targetData.attackHeading
+    local targetType = targetData.targetType
+    local targetAltMeters = parseAltitude(targetData.altitude, cruiseAltMeters)
     
-    BOMBER_LOGGER:Debug("ROUTE", "Processing target %d/%d: %s at %s (Type: %s, Heading: %s)", 
+    BOMBER_LOGGER:Debug("ROUTE", "Processing target %d/%d: %s at %s (Type: %s, Target: %s, Heading: %s, Alt: %.0fm)", 
       targetIndex, #self.Targets, targetName, targetCoord:ToStringLLDMS(), 
-      attackType, attackHeading and string.format("%.0f°", attackHeading) or "AUTO")
+      attackType, targetType or "GENERIC", attackHeading and string.format("%.0f°", attackHeading) or "AUTO", targetAltMeters)
     
     -- Determine if this is a runway/carpet bombing target
     local isRunwayTarget = false
@@ -3186,12 +3223,26 @@ function BOMBER_MISSION:_BuildRoute()
       BOMBER_LOGGER:Debug("ROUTE", "Target %d: %s attack - using point target bombing", targetIndex, attackType)
     end
     
+    -- Handle CARPET attack type separately
+    if attackType == "CARPET" then
+      isRunwayTarget = false
+      BOMBER_LOGGER:Info("ROUTE", "Target %d: CARPET attack (non-runway carpet bombing)", targetIndex)
+      
+      -- Use specified heading or default to north
+      if not runwayHeading then
+        runwayHeading = 0
+        BOMBER_LOGGER:Debug("ROUTE", "No heading specified for CARPET, using 0° (north)")
+      else
+        BOMBER_LOGGER:Debug("ROUTE", "Using specified CARPET attack heading: %.0f°", runwayHeading)
+      end
+    end
+    
     -- Configure bombing run based on target type
     local ipDistance, ipHeading, attackQty, attackType, expend
     
-    if isRunwayTarget then
-      -- RUNWAY CARPET BOMBING - Single devastating pass
-      -- Position IP out along runway axis for long, straight approach
+    if isRunwayTarget or attackType == "CARPET" then
+      -- CARPET BOMBING - Single devastating pass (runway or non-runway)
+      -- Position IP out along attack axis for long, straight approach
       ipDistance = BOMBER_ESCORT_CONFIG.RunwayApproachDistance
       
       -- Determine best approach direction based on current position
@@ -3200,7 +3251,7 @@ function BOMBER_MISSION:_BuildRoute()
         and self.RouteWaypoints[#self.RouteWaypoints].coordinate 
         or startCoord
       
-      -- Calculate which runway direction is closer to current heading
+      -- Calculate which direction is closer to current heading
       local headingToTarget = lastPos:HeadingTo(targetCoord)
       local diff1 = math.abs(headingToTarget - runwayHeading)
       local diff2 = math.abs(headingToTarget - (runwayHeading + 180))
@@ -3209,16 +3260,16 @@ function BOMBER_MISSION:_BuildRoute()
       if diff1 > 180 then diff1 = 360 - diff1 end
       if diff2 > 180 then diff2 = 360 - diff2 end
       
-      -- Choose runway direction closest to current heading
+      -- Choose direction closest to current heading
       local approachHeading
       if diff1 < diff2 then
-        -- Approach from opposite of runway heading
+        -- Approach from opposite of attack heading
         approachHeading = (runwayHeading + 180) % 360
-        BOMBER_LOGGER:Debug("ROUTE", "Runway attack: Approach from %.0f° (runway heading %.0f°)", approachHeading, runwayHeading)
+        BOMBER_LOGGER:Debug("ROUTE", "Carpet attack: Approach from %.0f° (attack heading %.0f°)", approachHeading, runwayHeading)
       else
-        -- Approach from same as runway heading (reciprocal attack)
+        -- Approach from same as attack heading (reciprocal attack)
         approachHeading = runwayHeading
-        BOMBER_LOGGER:Debug("ROUTE", "Runway attack: Approach from %.0f° (reciprocal to runway %.0f°)", approachHeading, (runwayHeading + 180) % 360)
+        BOMBER_LOGGER:Debug("ROUTE", "Carpet attack: Approach from %.0f° (reciprocal to attack %.0f°)", approachHeading, (runwayHeading + 180) % 360)
       end
       
       ipHeading = approachHeading
@@ -3226,7 +3277,7 @@ function BOMBER_MISSION:_BuildRoute()
       attackType = "Carpet" -- Carpet bombing mode
       expend = "All" -- Drop everything in one pass
       
-      BOMBER_LOGGER:Info("ROUTE", "Target %d: RUNWAY CARPET BOMB - 1 pass, heading %.0f°, expend ALL", 
+      BOMBER_LOGGER:Info("ROUTE", "Target %d: CARPET BOMB - 1 pass, heading %.0f°, expend ALL", 
         targetIndex, approachHeading)
     else
       -- POINT TARGET (building, bridge, etc.)
@@ -3240,25 +3291,25 @@ function BOMBER_MISSION:_BuildRoute()
     end
     
     -- Waypoint: IP - Initial Point before this target
-    local ipCoord = targetCoord:Translate(ipDistance, ipHeading):SetAltitude(cruiseAltMeters)
+    local ipCoord = targetCoord:Translate(ipDistance, ipHeading):SetAltitude(targetAltMeters)
     table.insert(waypoints, ipCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
     
-    -- For runway carpet bombing, create simple waypoints with bombing task at center
-    if isRunwayTarget then
+    -- For carpet bombing (runway or non-runway), create simple waypoints with bombing task at center
+    if isRunwayTarget or attackType == "CARPET" then
       local attackHeading = (ipHeading + 180) % 360
       
       -- Start of bombing run - 8km before runway (gives time to arm and drop)
-      local startBombCoord = targetCoord:Translate(8000, ipHeading):SetAltitude(cruiseAltMeters)
+      local startBombCoord = targetCoord:Translate(8000, ipHeading):SetAltitude(targetAltMeters)
       table.insert(waypoints, startBombCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
       
       -- Runway center waypoint - CARPET BOMBING TASK HERE
-      local centerWP = targetCoord:SetAltitude(cruiseAltMeters):WaypointAirTurningPoint(nil, cruiseSpeedMPS)
+      local centerWP = targetCoord:SetAltitude(targetAltMeters):WaypointAirTurningPoint(nil, cruiseSpeedMPS)
       local targetVec3 = targetCoord:GetVec3()
       
       -- Track this target waypoint for dynamic routing
       table.insert(targetWaypointMapping, {waypointIndex = #waypoints + 1, targetCoord = targetCoord, targetIndex = targetIndex})
       
-      -- Use proper CarpetBombing task for runway attacks
+      -- Use proper CarpetBombing task for carpet bombing attacks
       centerWP.task = {
         id = "ComboTask",
         params = {
@@ -3290,14 +3341,14 @@ function BOMBER_MISSION:_BuildRoute()
       table.insert(waypoints, centerWP)
       
       -- End of bombing run - 8km past runway
-      local endBombCoord = targetCoord:Translate(8000, attackHeading):SetAltitude(cruiseAltMeters)
+      local endBombCoord = targetCoord:Translate(8000, attackHeading):SetAltitude(targetAltMeters)
       table.insert(waypoints, endBombCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS))
       
-      BOMBER_LOGGER:Debug("ROUTE", "Runway attack: IP->Start(-8km)->Center(CARPET BOMB)->End(+8km) heading %.0f°", attackHeading)
+      BOMBER_LOGGER:Debug("ROUTE", "Carpet attack: IP->Start(-8km)->Center(CARPET BOMB)->End(+8km) heading %.0f°", attackHeading)
       
     else
       -- POINT TARGET: Standard bombing with multiple passes
-      local bombingCoord = targetCoord:SetAltitude(cruiseAltMeters)
+      local bombingCoord = targetCoord:SetAltitude(targetAltMeters)
       local targetWP = bombingCoord:WaypointAirTurningPoint(nil, cruiseSpeedMPS)
       local targetVec3 = targetCoord:GetVec3()
       
@@ -9076,16 +9127,17 @@ function BOMBER:onenterAttacking()
   if self.Targets and #self.Targets > 0 and self.CurrentTargetIndex <= #self.Targets then
     local targetData = self.Targets[self.CurrentTargetIndex]
     local targetCoord = targetData.coordinate
-    local isRunwayTarget = targetData.targetParams and targetData.targetParams.attackType == "RUNWAY"
+    local isCarpetTarget = targetData.attackType and (targetData.attackType == "RUNWAY" or targetData.attackType == "CARPET")
+    local targetDesc = targetData.targetType or (isCarpetTarget and "CARPET BOMB" or "POINT TARGET")
     
     BOMBER_LOGGER:Debug("COMBAT", "%s: Target type: %s at %s", 
       self.Callsign, 
-      isRunwayTarget and "RUNWAY CARPET BOMB" or "POINT TARGET",
+      targetDesc,
       targetCoord:ToStringLLDMS())
       
-    if isRunwayTarget then
-      local attackHeading = targetData.targetParams.heading or 0
-      BOMBER_LOGGER:Debug("COMBAT", "%s: Runway attack heading: %.0f°", self.Callsign, attackHeading)
+    if isCarpetTarget then
+      local attackHeading = targetData.attackHeading or 0
+      BOMBER_LOGGER:Debug("COMBAT", "%s: Carpet attack heading: %.0f°", self.Callsign, attackHeading)
     end
   else
     BOMBER_LOGGER:Error("COMBAT", "%s: No target data available!", self.Callsign)
@@ -9565,7 +9617,7 @@ function BOMBER_ESCORT_INIT(options)
   BOMBER_LOGGER:Info("INIT", "  [OK] Numbered waypoint system (BOMBER1, TARGET1)")
   BOMBER_LOGGER:Info("INIT", "  [OK] Auto-detect spawn airbase from marker")
   BOMBER_LOGGER:Info("INIT", "  [OK] Multiple targets in sequence")
-  BOMBER_LOGGER:Info("INIT", "  [OK] Runway carpet bombing (auto or manual heading)")
+  BOMBER_LOGGER:Info("INIT", "  [OK] Carpet bombing (runway or area, auto or manual heading)")
   BOMBER_LOGGER:Info("INIT", "  [OK] Custom egress routes (EGRESS1-n, RTB1)")
   BOMBER_LOGGER:Info("INIT", "  [OK] F10 mission control and validation")
   BOMBER_LOGGER:Info("INIT", "  [OK] Formation management")

@@ -22,7 +22,7 @@ A comprehensive, dynamic AI bomber mission system for DCS World using the MOOSE 
   - Configurable threat tolerance and abort logic.
 
 - **Mission Types & Targeting:**
-  - Supports runway carpet bombing, point targets (buildings, bridges), and multi-target missions.
+  - Supports runway carpet bombing, area carpet bombing, point targets (buildings, bridges), and multi-target missions.
   - Auto-detects runways and attack headings.
   - Customizable ingress, egress, and RTB waypoints.
 
@@ -65,9 +65,14 @@ A comprehensive, dynamic AI bomber mission system for DCS World using the MOOSE 
 
 ## Advanced Marker Syntax
 
-- `BOMBER1:SPAWN:B-17G:4:FL200:180` — WWII, 4-ship, 20,000ft, 180kts
+- `BOMBER1:SPAWN:B-1B:4:FL200:180` — WWII, 4-ship, 20,000ft, 180kts
 - `BOMBER1:TARGET1:RUNWAY:090` — Runway attack from heading 090°
-- `BOMBER1:TARGET1:BRIDGE` — Bridge attack
+- `BOMBER1:TARGET1:CARPET:090` — Area carpet bombing from heading 090°
+- `BOMBER1:TARGET1:FACTORY` — Factory attack
+- `BOMBER1:TARGET1:FACTORY:CARPET` — Factory with carpet bombing
+- `BOMBER1:TARGET1:FACTORY:CARPET:FL150` — Factory carpet at FL150
+- `BOMBER1:TARGET1:FUELTANK:090` — Fuel tank attack from heading 090°
+- `BOMBER1:TARGET1:BUNKER:CARPET:FL200` — Bunker carpet bombing at FL200
 - `BOMBER1:RTB` — Custom RTB point
 - `RESPAWN1` — Respawn last mission
 
