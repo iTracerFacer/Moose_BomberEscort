@@ -472,27 +472,28 @@ function BOMBER_MARKER:_ParseWaypointMarker(markerText, defaultAlt, defaultSpeed
   end
 
   -- Now, filteredParts should be: [Type], [Size], [Alt], [Speed] (in any order after removing SPAWN/START)
-  -- Assign by position: type, size, altitude, speed
+  -- Assign type as first, then parse others based on content
   if #filteredParts >= 1 and filteredParts[1] ~= "" then
-    result.type = filteredParts[1]
+    result.type = string.upper(filteredParts[1])
   end
-  if #filteredParts >= 2 and filteredParts[2] ~= "" then
-    result.size = tonumber(filteredParts[2])
-  end
-  if #filteredParts >= 3 then
-    local altStr = string.upper(filteredParts[3])
-    local flNum = string.match(altStr, "FL(%d+)")
-    if flNum then
+  for i = 2, #filteredParts do
+    local part = filteredParts[i]
+    if string.match(string.upper(part), "^FL%d+") then
+      local flNum = string.match(string.upper(part), "FL(%d+)")
       result.altitude = tonumber(flNum) * 100
-    else
-      result.altitude = tonumber(filteredParts[3]) or defaultAlt
+    elseif tonumber(part) then
+      local num = tonumber(part)
+      if not result.size then
+        result.size = num
+      elseif not result.altitude then
+        result.altitude = num
+      else
+        result.speed = num
+      end
     end
   end
-  if #filteredParts >= 4 then
-    result.speed = tonumber(filteredParts[4]) or defaultSpeed
-  end
 
-  BOMBER_LOGGER:Debug("MARKER", "_ParseWaypointMarker: markerText='%s', parsed type='%s'", markerText, tostring(result.type))
+  BOMBER_LOGGER:Debug("MARKER", "_ParseWaypointMarker: markerText='%s', parsed type='%s', altitude='%s', speed='%s', size='%s'", markerText, tostring(result.type), tostring(result.altitude), tostring(result.speed), tostring(result.size))
   return result
 end
 
@@ -741,13 +742,17 @@ end
 -- @param #table mission Mission data structure
 function BOMBER_MARKER:_ExecuteSingleMission(mission)
   local params = mission.spawn.params
-  BOMBER_LOGGER:Debug("MARKER", "_ExecuteSingleMission: missionId='%s', params.type='%s'", tostring(mission.id), tostring(params and params.type))
+  BOMBER_LOGGER:Debug("MARKER", "_ExecuteSingleMission: missionId='%s', params.type='%s', params.altitude='%s', params.speed='%s'", tostring(mission.id), tostring(params and params.type), tostring(params and params.altitude), tostring(params and params.speed))
   if not params or not params.type then
     self:_SendMessage(mission.coalition, string.format(
       "[X] MARKER ERROR: No bomber type specified in marker for mission '%s'.\n\nCheck marker format: [MISSIONID]:SPAWN:[TYPE]...\nExample: BOMBER1:SPAWN:B-1B", tostring(mission.id)))
     BOMBER_LOGGER:Error("MARKER", "No bomber type specified in marker for mission '%s'. Aborting mission creation.", tostring(mission.id))
     return
   end
+
+  local bomberType = params.type
+  local flightSize = params.size or 1
+  local coalition = mission.coalition
   -- Check for duplicate mission ID
   if _ACTIVE_MISSION_IDS[mission.id] then
     -- Find next available mission number
@@ -800,8 +805,8 @@ function BOMBER_MARKER:_ExecuteSingleMission(mission)
     FlightSize = flightSize,
     Coalition = coalition,
     StartAirbase = startAirbase,
-    Altitude = params.altitude or 25000,
-    Speed = params.speed or 400,
+    CruiseAlt = params.altitude,
+    CruiseSpeed = params.speed,
     ForceLaunch = params.force or false,
     ScrambleLaunch = params.scramble or false,
     Waypoints = {},
@@ -1664,9 +1669,20 @@ end
 --- Stop threat monitoring
 -- @param #BOMBER_THREAT_MANAGER self
 function BOMBER_THREAT_MANAGER:Stop()
+  BOMBER_LOGGER:Info("THREAT", "ThreatManager:Stop() called")
   if self.SchedulerID then
-    self.SchedulerID:Stop()
+    BOMBER_LOGGER:Info("THREAT", "Stopping scheduler ID: %s", tostring(self.SchedulerID))
+    local success, err = pcall(function()
+      self.SchedulerID:Stop()
+    end)
+    if not success then
+      BOMBER_LOGGER:Error("THREAT", "Error stopping scheduler: %s", tostring(err))
+    else
+      BOMBER_LOGGER:Info("THREAT", "Scheduler stopped successfully")
+    end
     self.SchedulerID = nil
+  else
+    BOMBER_LOGGER:Warn("THREAT", "SchedulerID is nil, cannot stop")
   end
   
   -- Clear tracking data to free memory
@@ -1678,6 +1694,7 @@ function BOMBER_THREAT_MANAGER:Stop()
     self.ThreatHistory = {}
   end
   
+  BOMBER_LOGGER:Info("THREAT", "ThreatManager:Stop() completed")
   return self
 end
 
@@ -4595,9 +4612,6 @@ function BOMBER:New(templateName, missionData)
   self:AddTransition({BOMBER.States.EGRESSING, BOMBER.States.ABORTING}, "ReturnToBase", BOMBER.States.RTB)
   self:AddTransition(BOMBER.States.RTB, "Land", BOMBER.States.LANDED)
   self:AddTransition("*", "Destroy", BOMBER.States.DESTROYED)
-  
-  -- Start the FSM
-  self:Start()
   
   -- Initialize subsystems
   self.EscortMonitor = nil
@@ -8907,6 +8921,13 @@ function BOMBER:onenterPreAttack()
       end
     end, {}, 2) -- Announce 2 seconds after PRE_ATTACK message
   end
+  
+  -- Stop threat monitoring as we're committed to the attack
+  if self.ThreatManager then
+    self.ThreatManager:Stop()
+    self.ThreatManagerStarted = false
+    BOMBER_LOGGER:Info("THREAT", "%s: Threat manager stopped - committed to attack run", self.Callsign)
+  end
 end
 
 --- FSM State: Attacking (at target)
@@ -8932,6 +8953,9 @@ function BOMBER:onenterAttacking()
   }
   local attackMsg = attackMessages[math.random(#attackMessages)]
   self:_BroadcastMessage(string.format(attackMsg, self.Callsign))
+  
+  -- Announce commitment to attack
+  self:_BroadcastMessage(string.format("%s: Committed to attack run - no turning back now!", self.Callsign))
   
   -- Start monitoring IP runs to inform players during setup passes
   if self.IPRunMonitor then
