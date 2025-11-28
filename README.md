@@ -2,6 +2,8 @@
 
 A comprehensive, dynamic AI bomber mission system for DCS World using the MOOSE framework. This script allows players to create, launch, and escort AI bomber missions with advanced threat detection, SAM avoidance, and intelligent bomber/escort interaction—all controlled via F10 map markers and menus.
 
+DCS AI NOTE: At the time of this writing, some of the behavior described in this document is intended behavior. More often then not DCS AI will override certain paramaters when there is a bombing waypoit in the route. You might give it 3 waypoints it and it may ignore them. Don't be surpirsed if the bombers do something unexpected. I've spent countless hours attempting to influence the routes and behaviours of the AI and have simply reached a stalement as to what is possible. A prime example is the the 2 pass bombing routine the bombers do. You give the bombers a target, they fly over once, come around a drop on a 2nd pass (most of the time). There is simply nothing you can do about this behavior from all of my testing and experimentation. I've lost countless hours of sleep trying to get around it. 
+
 ## Features
 
 - **Player-Driven Bomber Missions:**
