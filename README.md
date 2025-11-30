@@ -76,7 +76,7 @@ DCS AI NOTE: At the time of this writing, some of the behavior described in this
 - `BOMBER1:TARGET1:FUELTANK:090` — Fuel tank attack from heading 090°
 - `BOMBER1:TARGET1:BUNKER:CARPET:FL200` — Bunker carpet bombing at FL200
 - `BOMBER1:RTB` — Custom RTB point
-- `RESPAWN1` — Respawn last mission
+
 
 ## Configuration
 
@@ -105,7 +105,14 @@ The system uses a finite state machine (FSM) to manage bomber behavior, with dif
 
 Bomber escort configuration is handled on a per airframe basis or can be disabled globaly. 
 
-### Escort Bombers:
+### Non-Escort Bombers:
+**Simplified Flow:**
+- **Spawned** → **Engine Starting** (immediate cold start, no escort wait)
+- **Taxiing** → **Taking Off** → **Climbing** → **Cruise** → **Pre-Attack** → **Attacking** → **Egressing** → **RTB** → **Landed**
+
+These modern bombers operate independently but still recognize and acknowledge player escorts for formation flying compliments and enhanced protection. this again is configurable per airframe.
+
+### Escort Required Bombers:
 **Ground Phase:**
 - **Spawned**: Bomber spawns on ramp, cold, dark, no pilots, waits for player escort confirmation
 - **Holding**: Monitors for escorts within 5km. If no escorts detected after grace period, broadcasts "need escort" messages every 60 seconds (up to 5 times before aborting)
@@ -130,13 +137,6 @@ Bomber escort configuration is handled on a per airframe basis or can be disable
 - During RTB, broadcasts "escort appreciated until landing" and monitors for close escorts
 - If escorts detected within 500m during RTB, mission can resume if previously aborted (buggy)
 - Without escorts, bomber will RTB and land independently.
-
-### Non-Escort Bombers:
-**Simplified Flow:**
-- **Spawned** → **Engine Starting** (immediate cold start, no escort wait)
-- **Taxiing** → **Taking Off** → **Climbing** → **Cruise** → **Pre-Attack** → **Attacking** → **Egressing** → **RTB** → **Landed**
-
-These modern bombers operate independently but still recognize and acknowledge player escorts for formation flying compliments and enhanced protection. this again is configurable per airframe.
 
 ### Threat Detection & SAM Avoidance
 
