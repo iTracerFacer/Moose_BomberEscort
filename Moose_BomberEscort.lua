@@ -132,8 +132,8 @@ BOMBER_ESCORT_CONFIG = {
   
   -- Escort Requirements
   RequireEscort = true,                -- Bombers require player escort to proceed with mission (default: true, set false to allow solo bomber missions)
-  EscortAirborneJoinGrace = 120,       -- Seconds of grace after liftoff before escort warnings begin (default: 90)
-  EscortFormUpAnnouncementInterval = 60, -- Seconds between "need escort" calls during form-up (default: 60)
+  EscortAirborneJoinGrace = 300,       -- Seconds of grace after liftoff before escort warnings begin (default: 90)
+  EscortFormUpAnnouncementInterval = 120, -- Seconds between "need escort" calls during form-up (default: 60)
   EscortFormUpMaxAnnouncements = 5,    -- Number of calls before aborting form-up (default: 5)
   EscortLossAnnouncementInterval = 60, -- Seconds between in-flight escort loss warnings (default: 60)
   EscortLossMaxAnnouncements = 5,      -- Number of warnings before aborting due to no escort (default: 5)
