@@ -519,6 +519,8 @@ Recommended speeds by bomber type:
 - Built on the MOOSE framework
 - Special thanks to the DCS and MOOSE communities
 
+**Discord:** https://discord.gg/NdZ2JuSU (The Fighting 99th Discord Server where I spend most of my time.)
+
 ## License
 
 Copyright 2025 F99th-TracerFacer
