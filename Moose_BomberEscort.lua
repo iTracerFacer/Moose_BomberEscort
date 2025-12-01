@@ -7,6 +7,8 @@
 -- @author F99th-TracerFacer
 -- @copyright 2025
 --
+---@diagnostic disable: undefined-global, lowercase-global
+-- MOOSE framework globals are defined at runtime by DCS World
 
 -- Global spawn counter to ensure unique MOOSE spawn indices
 if not _BOMBER_GLOBAL_SPAWN_COUNTER then
@@ -943,10 +945,14 @@ function BOMBER_MARKER:_ExecuteMultiMissions(missions, coalitionSide)
     -- Always show what was parsed
     if hasSpawn then
       feedbackMsg = feedbackMsg .. string.format("[OK] SPAWN: %s\n", mission.spawn.markerText)
-      feedbackMsg = feedbackMsg .. string.format("  Type: %s, Size: %s, Alt: %s, Speed: %s\n",
-        params.type or "[MISSING]", tostring(params.size or "[DEFAULT]"), tostring(params.altitude or "[DEFAULT]"), tostring(params.speed or "[DEFAULT]"))
-      if not params.type then
-        feedbackMsg = feedbackMsg .. "  [X] Bomber type missing or malformed!\n"
+      if params then
+        feedbackMsg = feedbackMsg .. string.format("  Type: %s, Size: %s, Alt: %s, Speed: %s\n",
+          params.type or "[MISSING]", tostring(params.size or "[DEFAULT]"), tostring(params.altitude or "[DEFAULT]"), tostring(params.speed or "[DEFAULT]"))
+        if not params.type then
+          feedbackMsg = feedbackMsg .. "  [X] Bomber type missing or malformed!\n"
+        end
+      else
+        feedbackMsg = feedbackMsg .. "  [X] Failed to parse spawn marker parameters!\n"
       end
     else
       feedbackMsg = feedbackMsg .. "[X] SPAWN: NONE (required)\n"
@@ -1221,10 +1227,10 @@ end
 function BOMBER_MARKER:_GetNextAvailableMissionNumber()
   local maxNum = 0
   for missionId in pairs(_ACTIVE_MISSION_IDS) do
-    local num = string.match(missionId, "BOMBER(%d+)")
-    if num then
-      num = tonumber(num)
-      if num > maxNum then
+    local numStr = string.match(missionId, "BOMBER(%d+)")
+    if numStr then
+      local num = tonumber(numStr)
+      if num and num > maxNum then
         maxNum = num
       end
     end
@@ -3443,8 +3449,8 @@ function BOMBER_MISSION:_BuildRoute()
   end
   
   -- Waypoint 1: Start (takeoff)
-  local cruiseAlt = self.CruiseAlt or profile.CruiseAlt
-  local cruiseSpeed = self.CruiseSpeed or profile.CruiseSpeed
+  local cruiseAlt = self.CruiseAlt or (profile and profile.CruiseAlt) or BOMBER_ESCORT_CONFIG.DefaultAltitude
+  local cruiseSpeed = self.CruiseSpeed or (profile and profile.CruiseSpeed) or BOMBER_ESCORT_CONFIG.DefaultSpeed
   local cruiseAltMeters = cruiseAlt * 0.3048 -- Convert feet to meters
   local cruiseSpeedMPS = cruiseSpeed * 0.514444 -- Convert knots to m/s
   
@@ -4383,9 +4389,10 @@ function BOMBER_MISSION:_PlayerRequestSpeedUp()
     local profile = self.Bomber.Profile
     local currentSpeed = self.Bomber.Group:GetVelocityKNOTS()
     
-    if currentSpeed < profile.MaxSpeed - 10 then
+    local maxSpeed = (profile and profile.MaxSpeed) or 500  -- Default max speed if not defined
+    if currentSpeed < maxSpeed - 10 then
       self.Bomber:_BroadcastMessage(string.format("%s: Increasing speed.", self.Callsign))
-      local newSpeed = math.min(currentSpeed + 20, profile.MaxSpeed)
+      local newSpeed = math.min(currentSpeed + 20, maxSpeed)
       self.Bomber.Group:SetSpeed(newSpeed * 0.514444) -- Convert to m/s
     else
       self.Bomber:_BroadcastMessage(string.format("%s: Negative, already at max speed.", self.Callsign))
@@ -4399,10 +4406,11 @@ function BOMBER_MISSION:_PlayerRequestSlowDown()
   if self.Bomber and self.Bomber:IsAlive() then
     local profile = self.Bomber.Profile
     local currentSpeed = self.Bomber.Group:GetVelocityKNOTS()
-    
-    if currentSpeed > profile.MinSpeed + 10 then
+    local minSpeed = (profile and profile.MinSpeed) or 200  -- Default min speed if not defined
+    if currentSpeed > minSpeed + 10 then
       self.Bomber:_BroadcastMessage(string.format("%s: Reducing speed.", self.Callsign))
-      local newSpeed = math.max(currentSpeed - 20, profile.MinSpeed)
+      local newSpeed = math.max(currentSpeed - 20, minSpeed)
+      self.Bomber.Group:SetSpeed(newSpeed * 0.514444)
       self.Bomber.Group:SetSpeed(newSpeed * 0.514444)
     else
       self.Bomber:_BroadcastMessage(string.format("%s: Negative, already at minimum speed.", self.Callsign))
@@ -6645,7 +6653,7 @@ function BOMBER:_StartRTBMonitor()
               self.LandingMonitor = nil
             end
             
-            self:Destroy(1)
+            self:Destroy()
             return
           end
         else
@@ -8385,7 +8393,7 @@ function BOMBER:_UpdateSAMStatusSummary()
     end
   elseif threatCount > 1 and primaryThreat then
     local closestNm = math.floor(closestDist / 1852)
-    local closestBearing = math.floor(closest.Bearing)
+    local closestBearing = closest and closest.Bearing and math.floor(closest.Bearing) or 0
     local primaryType = primaryThreat.SAMType or "Unknown"
     local canEngage = primaryThreat.CanEngage
     
