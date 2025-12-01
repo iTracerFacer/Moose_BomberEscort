@@ -6,6 +6,17 @@
 -- @module BOMBER_ESCORT
 -- @author F99th-TracerFacer
 -- @copyright 2025
+
+--Naming Convention - Make sure these groups exist in the mission editor and are spelled EXACTLY as shown.
+--
+--B-17G -> Template name: BOMBER_B17G
+--B-24J -> Template name: BOMBER_B24J
+--B-52H -> Template name: BOMBER_B52H
+--B-1B -> Template name: BOMBER_B1B
+--Tu-95MS -> Template name: BOMBER_TU95
+--Tu-142 -> Template name: BOMBER_TU142
+--Tu-22M3 -> Template name: BOMBER_TU22
+--Tu-160 -> Template name: BOMBER_TU160
 --
 ---@diagnostic disable: undefined-global, lowercase-global
 -- MOOSE framework globals are defined at runtime by DCS World
@@ -24,17 +35,6 @@ end
 if not _ACTIVE_MISSION_IDS then
   _ACTIVE_MISSION_IDS = {}
 end
-
---Naming Convention:
---
---B-17G -> Template name: BOMBER_B17G
---B-24J -> Template name: BOMBER_B24J
---B-52H -> Template name: BOMBER_B52H
---B-1B -> Template name: BOMBER_B1B
---Tu-95MS -> Template name: BOMBER_TU95
---Tu-142 -> Template name: BOMBER_TU142
---Tu-22M3 -> Template name: BOMBER_TU22M3
---Tu-160 -> Template name: BOMBER_TU160
 
 ---
 -- LOGGING SYSTEM
