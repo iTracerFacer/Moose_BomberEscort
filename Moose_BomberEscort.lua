@@ -152,8 +152,9 @@ BOMBER_ESCORT_CONFIG = {
   EscortFormationComplimentInterval = 180, -- Seconds between formation flying compliments (default: 180s = 3 minutes)
   
   -- Threat Detection
-  SAMThreatDistance = 100000,          -- Meters - SAM detection range (default: 100km - extended for early avoidance)
-  FighterThreatDistance = 100000,      -- Meters - Fighter detection range (default: 100km - extended for escort positioning time)
+  -- OPTIMIZATION: Reduced from 100km to 80km to lower pathfinding memory usage
+  SAMThreatDistance = 80000,           -- Meters - SAM detection range (default: 80km - optimized for memory)
+  FighterThreatDistance = 80000,       -- Meters - Fighter detection range (default: 80km - optimized for memory)
   ThreatCheckInterval = 10,            -- Seconds between threat scans (default: 10)
   
   -- SAM Warning System
@@ -165,7 +166,7 @@ BOMBER_ESCORT_CONFIG = {
   EnableSAMAvoidance = true,           -- Enable SAM threat detection and mission abort (default: true)
   SAMAvoidanceBuffer = 25000,          -- Meters - Buffer added to SAM range for threat assessment (default: 25km)
   SAMCorridorBuffer = 10000,           -- Meters - Smaller buffer for corridor finding (pre-planning can be more aggressive, default: 10km)
-  SAMRouteLookAhead = 150000,          -- Meters - Check route this far ahead for SAMs (default: 150km)
+  SAMRouteLookAhead = 120000,          -- Meters - Check route this far ahead for SAMs (OPTIMIZED: reduced from 150km to 120km for memory)
   SAMAvoidOnlyIfCanEngage = true,      -- Only abort for SAMs that can engage at current altitude (default: true)
   SAMRerouteCheckInterval = 10,        -- Seconds between route threat checks during flight (default: 10s)
   
@@ -200,6 +201,9 @@ BOMBER_ESCORT_CONFIG = {
   -- Debug/Instrumentation
   EnableRouteDebugSnapshots = true,    -- Dump controller route tables after each route apply (set false to disable heavy TRACE logs)
   RouteSnapshotDelaySeconds = 0.75,    -- Delay before sampling controller route (allows DCS AI to register the new plan)
+  
+  -- Memory Management
+  GarbageCollectionInterval = 600,     -- Seconds between forced Lua garbage collection cycles (default: 600 = 10 minutes)
 }
 
 ---
@@ -1361,6 +1365,10 @@ function BOMBER_ESCORT_MONITOR:Stop()
     self.EscortUnits = {}
   end
   
+  -- Force two-pass garbage collection for thorough cleanup
+  collectgarbage("collect")
+  collectgarbage("collect")
+  
   return self
 end
 
@@ -2026,6 +2034,9 @@ function BOMBER_THREAT_MANAGER:Stop()
   if self.ThreatHistory then
     self.ThreatHistory = {}
   end
+  
+  -- Force garbage collection after clearing tables
+  collectgarbage("collect")
   
   BOMBER_LOGGER:Info("THREAT", "ThreatManager:Stop() completed")
   return self
@@ -3244,6 +3255,10 @@ function BOMBER_MISSION_MANAGER:UnregisterMission(mission)
     if pruneCount > 0 then
       BOMBER_LOGGER:Debug("MISSION", "Pruned %d unused SPAWN objects from global cache", pruneCount)
     end
+    
+    -- Force two-pass garbage collection after cleanup
+    collectgarbage("collect")
+    collectgarbage("collect")
   end
 end
 
@@ -9967,6 +9982,16 @@ function BOMBER_ESCORT_INIT(options)
   BOMBER_LOGGER:Info("INIT", "==============================================")
   BOMBER_LOGGER:Info("INIT", "For complete documentation, see MARKER_GUIDE.md")
   BOMBER_LOGGER:Info("INIT", "==============================================")
+  
+  -- Schedule periodic garbage collection to prevent memory buildup
+  if BOMBER_ESCORT_CONFIG.GarbageCollectionInterval and BOMBER_ESCORT_CONFIG.GarbageCollectionInterval > 0 then
+    SCHEDULER:New(nil, function()
+      collectgarbage("collect")
+      local memKB = collectgarbage("count")
+      BOMBER_LOGGER:Debug("MEMORY", "Garbage collection complete. Current Lua memory: %.1f MB", memKB / 1024)
+    end, {}, 120, BOMBER_ESCORT_CONFIG.GarbageCollectionInterval)
+    BOMBER_LOGGER:Info("INIT", "Memory Management: Garbage collection scheduled every %d seconds", BOMBER_ESCORT_CONFIG.GarbageCollectionInterval)
+  end
 
   
   return _BOMBER_MARKER_SYSTEM
