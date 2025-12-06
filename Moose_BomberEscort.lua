@@ -1,23 +1,151 @@
 --- MOOSE Bomber Escort System
--- A comprehensive player-escort AI bomber mission system
--- Players use F10 map markers to create bomber missions, then escort them to targets
--- Bombers exhibit intelligent behavior based on escort presence and threats
+--
+-- SYNOPSIS
+-- ========
+--
+-- The MOOSE Bomber Escort System is a comprehensive, dynamic AI bomber mission framework for DCS World.
+-- It enables players to create, launch, and escort AI-controlled bomber missions using F10 map markers,
+-- with advanced threat detection, SAM avoidance, and intelligent bomber/escort interactions.
+--
+-- KEY FEATURES
+-- ============
+--
+-- * Player-Driven Missions: Create bomber missions via F10 map markers (no scripting required)
+-- * Multiple Bomber Types: Supports WWII, Cold War, and Modern strategic bombers
+-- * Escort System: Bombers require player escort with real-time detection and feedback
+-- * Threat Detection: Automatic SAM and fighter threat detection with mission abort logic
+-- * Route Planning: Pre-mission SAM corridor analysis and in-flight rerouting
+-- * Mission Types: Runway bombing, carpet bombing, point targets, and multi-target missions
+-- * F10 Menu Integration: Launch, monitor, and control missions in-game
+-- * Voice Lines: Dynamic in-game audio feedback for escort actions and mission status
+--
+-- SUPPORTED BOMBER TYPES
+-- =======================
+--
+-- WWII Era:
+--   - B-17G Flying Fortress
+--   - B-24J Liberator
+--
+-- Cold War Era:
+--   - B-52H Stratofortress
+--   - Tu-95MS Bear
+--   - Tu-142 Bear-F
+--
+-- Modern Era:
+--   - B-1B Lancer
+--   - Tu-22M3 Backfire
+--   - Tu-160 Blackjack
+--
+-- QUICK START GUIDE
+-- =================
+--
+-- 1. MISSION EDITOR SETUP:
+--    - Add late-activated groups for desired bomber types
+--    - Name templates exactly as shown in the naming convention below
+--    - Load MOOSE framework and this script in your mission
+--
+-- 2. CREATE MISSIONS USING F10 MAP MARKERS:
+--    - Place markers on the F10 map with specific text formats
+--    - Use the TAG system (marker-based mission creation) as detailed below
+--
+-- 3. LAUNCH MISSIONS:
+--    - Use F10 menu: "Bomber Missions > Launch Bomber Mission"
+--
+-- 4. ESCORT THE BOMBERS:
+--    - Fly within escort detection range and maintain formation
+--    - Respond to in-game warnings and voice feedback
+--
+-- USING THE TAG SYSTEM (F10 MAP MARKERS)
+-- ======================================
+--
+-- The TAG system allows players to create complete bomber missions by placing F10 map markers
+-- with specific text formats. Each mission is identified by a unique MISSIONID (e.g., BOMBER1, STRIKE2).
+--
+-- BASIC MARKER SYNTAX:
+-- -------------------
+-- MISSIONID:KEYWORD[:PARAMETERS]
+--
+-- REQUIRED MARKERS:
+-- ----------------
+-- * SPAWN Marker: Defines the bomber type, size, altitude, and speed
+--   Format: MISSIONID:SPAWN:BOMBERTYPE[:SIZE][:ALTITUDE][:SPEED][:FLAGS]
+--   Examples:
+--     BOMBER1:SPAWN:B-52H              (default size/alt/speed)
+--     BOMBER1:SPAWN:B-1B:4:FL250:500   (4-ship, 25,000ft, 500kts)
+--     BOMBER1:START:B-17G:2:FL200:180  (alternative START keyword)
+--
+-- * TARGET Marker: Defines the primary mission target
+--   Format: MISSIONID:TARGET#:TARGETTYPE[:ATTACKTYPE][:HEADING][:ALTITUDE]
+--   Examples:
+--     BOMBER1:TARGET1                  (basic point target)
+--     BOMBER1:TARGET1:RUNWAY:090       (runway attack from 090° heading)
+--     BOMBER1:TARGET1:CARPET:270       (carpet bombing from 270°)
+--     BOMBER1:TARGET1:FACTORY:CARPET:FL150  (factory carpet at FL150)
+--
+-- OPTIONAL MARKERS:
+-- ----------------
+-- * WAYPOINT Markers: Define en-route waypoints for ingress/egress
+--   Format: MISSIONID:WP#:COORDINATES
+--   Examples:
+--     BOMBER1:WP1    (waypoint 1)
+--     BOMBER1:WP2    (waypoint 2)
+--
+-- * RTB Marker: Defines custom Return-To-Base point
+--   Format: MISSIONID:RTB
+--   Example: BOMBER1:RTB
+--
+-- * RESET Marker: Aborts and removes a mission
+--   Format: MISSIONID:RESET
+--   Example: BOMBER1:RESET
+--
+-- ADVANCED PARAMETERS:
+-- ------------------
+-- * Bomber Types: B-1B, B-17G, B-24J, B-52H, Tu-95, Tu-142, Tu-22M3, Tu-160
+-- * Altitude: FL100-FL600 or numeric feet (e.g., 25000)
+-- * Speed: Knots (e.g., 450)
+-- * Size: 1-4 aircraft per flight
+-- * Attack Types: RUNWAY, CARPET, AUTO
+-- * Target Types: FACTORY, BUNKER, FUELTANK, etc. (cosmetic)
+-- * Flags: :FORCE (override airbase spawn), :SCRAMBLE (immediate launch)
+--
+-- MISSION EXECUTION:
+-- -----------------
+-- 1. Place all required markers (SPAWN + at least one TARGET)
+-- 2. Use F10 menu to launch the mission
+-- 3. System validates markers and provides feedback for errors
+-- 4. Bombers spawn and wait for escort if required
+-- 5. Escort players fly within detection range to proceed
+-- 6. Mission executes with threat monitoring and voice updates
+--
+-- ERROR HANDLING:
+-- --------------
+-- The system provides detailed feedback for malformed markers:
+-- - Missing bomber type: Shows correct SPAWN format
+-- - Invalid bomber type: Lists all available types
+-- - Incomplete missions: Indicates missing required markers
+-- - Malformed syntax: Provides examples and corrections
 --
 -- @module BOMBER_ESCORT
 -- @author F99th-TracerFacer
 -- @copyright 2025
 
---Naming Convention - Make sure these groups exist in the mission editor and are spelled EXACTLY as shown.
+-- NAMING CONVENTION FOR BOMBER TEMPLATES
+-- ======================================
 --
---B-17G -> Template name: BOMBER_B17G
---B-24J -> Template name: BOMBER_B24J
---B-52H -> Template name: BOMBER_B52H
---B-1B -> Template name: BOMBER_B1B
---Tu-95MS -> Template name: BOMBER_TU95
---Tu-142 -> Template name: BOMBER_TU142
---Tu-22M3 -> Template name: BOMBER_TU22
---Tu-160 -> Template name: BOMBER_TU160
+-- Bomber templates must be late-activated groups in the Mission Editor,
+-- named EXACTLY as shown below (case-sensitive):
 --
+-- B-17G -> Template name: BOMBER_B17G
+-- B-24J -> Template name: BOMBER_B24J
+-- B-52H -> Template name: BOMBER_B52H
+-- B-1B -> Template name: BOMBER_B1B
+-- Tu-95MS -> Template name: BOMBER_TU95
+-- Tu-142 -> Template name: BOMBER_TU142
+-- Tu-22M3 -> Template name: BOMBER_TU22
+-- Tu-160 -> Template name: BOMBER_TU160
+--
+---@diagnostic disable: undefined-global, lowercase-global
+-- MOOSE framework globals are defined at runtime by DCS World
 ---@diagnostic disable: undefined-global, lowercase-global
 -- MOOSE framework globals are defined at runtime by DCS World
 
@@ -134,12 +262,17 @@ BOMBER_ESCORT_CONFIG = {
   
   -- Escort Requirements
   RequireEscort = true,                -- Bombers require player escort to proceed with mission (default: true, set false to allow solo bomber missions)
-  EscortAirborneJoinGrace = 300,       -- Seconds of grace after liftoff before escort warnings begin (default: 90)
-  EscortFormUpAnnouncementInterval = 120, -- Seconds between "need escort" calls during form-up (default: 60)
+  EscortAirborneJoinGrace = 300,       -- Seconds of grace after liftoff before escort warnings begin (default: 300)
+  EscortFormUpAnnouncementInterval = 120, -- Seconds between "need escort" calls during form-up (default: 120)
   EscortFormUpMaxAnnouncements = 5,    -- Number of calls before aborting form-up (default: 5)
   EscortLossAnnouncementInterval = 60, -- Seconds between in-flight escort loss warnings (default: 60)
   EscortLossMaxAnnouncements = 5,      -- Number of warnings before aborting due to no escort (default: 5)
-  
+
+  -- Escort Taxi Settings
+  EscortTaxiSpeedThreshold = 8,        -- Knots - Minimum speed to detect escort taxiing (default: 8 kts)
+  EscortTaxiConfirmDelay = 5,          -- Seconds - Delay before confirming escort is taxiing (default: 5)
+  EscortIdleStartDelay = 90,           -- Seconds - Delay after escort is staged before bomber departure (default: 90)
+
   -- Escort Classification Thresholds
   EscortCloseRange = 5000,             -- Meters - Definite escort range (default: 1km)
   EscortMediumRange = 10000,            -- Meters - Probable escort range (default: 5km)
@@ -4091,6 +4224,13 @@ end
 -- @param #table threats List of SAM threats
 -- @return #string Formatted military advisory message
 function BOMBER_MISSION:_BuildForceLaunchMessage(threats)
+  -- Use appropriate terminology based on bomber era
+  local isWWII = (self.BomberType == "B-17G" or self.BomberType == "B-24J")
+  local seadTerm = isWWII and "fighter escort" or "SEAD/DEAD escort"
+  local ewTerm = isWWII and "additional fighter support" or "Electronic warfare support"
+  local lockTerm = isWWII and "visual contact" or "radar lock"
+  local countermeasureTerm = isWWII and "evasive maneuvers" or "active countermeasure deployment"
+  
   local msg = "✓ MISSION OVERRIDE APPROVED - LAUNCHING\n\n"
   
   msg = msg .. "OPERATIONAL STATUS:\n"
@@ -4132,10 +4272,10 @@ function BOMBER_MISSION:_BuildForceLaunchMessage(threats)
   
   msg = msg .. "\n"
   msg = msg .. "TACTICAL ADVISORY:\n"
-  msg = msg .. "• SEAD/DEAD escort strongly recommended\n"
-  msg = msg .. "• Electronic warfare support advised\n"
-  msg = msg .. "• Mission will abort if radar lock detected\n"
-  msg = msg .. "• Expect active countermeasure deployment\n"
+  msg = msg .. string.format("• %s strongly recommended\n", seadTerm)
+  msg = msg .. string.format("• %s advised\n", ewTerm)
+  msg = msg .. string.format("• Mission will abort if %s detected\n", lockTerm)
+  msg = msg .. string.format("• Expect %s\n", countermeasureTerm)
   msg = msg .. "\n"
   msg = msg .. "Package is cleared hot. Good hunting."
   
@@ -4149,10 +4289,17 @@ end
 -- @param #number corridorsApplied Number of corridor modifications applied
 -- @return #string Formatted message
 function BOMBER_MISSION:_BuildSAMThreatReport(threats, isBlocking, corridorsApplied)
-  local msg = isBlocking and "❌ MISSION BLOCKED - SAM THREAT DETECTED\n\n" or "⚠️ SAM THREATS DETECTED ALONG ROUTE\n\n"
+  -- Use appropriate terminology based on bomber era
+  local isWWII = (self.BomberType == "B-17G" or self.BomberType == "B-24J")
+  local threatTerm = isWWII and "FLAK" or "SAM"
+  local threatTermPlural = isWWII and "FLAK" or "SAM"
+  local seadTerm = isWWII and "fighter" or "SEAD"
+  local radarTerm = isWWII and "visual contact" or "radar lock"
+  
+  local msg = isBlocking and string.format("❌ MISSION BLOCKED - %s THREAT DETECTED\n\n", threatTerm) or string.format("⚠️ %s THREATS DETECTED ALONG ROUTE\n\n", threatTermPlural)
   
   msg = msg .. "Route Analysis:\n"
-  msg = msg .. string.format("├─ %d SAM site%s threaten flight path:\n", #threats, #threats > 1 and "s" or "")
+  msg = msg .. string.format("├─ %d %s site%s threaten flight path:\n", #threats, threatTerm, #threats > 1 and "s" or "")
   
   -- Group threats by type
   local threatsByType = {}
@@ -4189,7 +4336,7 @@ function BOMBER_MISSION:_BuildSAMThreatReport(threats, isBlocking, corridorsAppl
     msg = msg .. "│\n"
     msg = msg .. "└─ RECOMMENDED ACTIONS:\n"
     msg = msg .. "   • Add :FORCE to BOMBER1 marker to override (high risk)\n"
-    msg = msg .. "   • Request SEAD to suppress threats before launch\n"
+    msg = msg .. string.format("   • Request %s escort to suppress threats before launch\n", seadTerm:upper())
     msg = msg .. "   • Consider alternate target or higher altitude\n"
     msg = msg .. "\n"
     msg = msg .. string.format("To override: Change marker to \"%s:FORCE\"", self.BomberType)
@@ -4198,9 +4345,9 @@ function BOMBER_MISSION:_BuildSAMThreatReport(threats, isBlocking, corridorsAppl
     msg = msg .. string.format("├─ ✓ Safe corridors found and applied (%d route modification%s)\n", 
       corridorsApplied, corridorsApplied > 1 and "s" or "")
     msg = msg .. "│\n"
-    msg = msg .. "└─ MISSION LAUNCHING with SAM-avoiding route\n"
+    msg = msg .. string.format("└─ MISSION LAUNCHING with %s-avoiding route\n", threatTerm)
     msg = msg .. "\n"
-    msg = msg .. "Route has been automatically adjusted to avoid SAM threats.\n"
+    msg = msg .. string.format("Route has been automatically adjusted to avoid %s threats.\n", threatTerm)
     msg = msg .. "Bomber will navigate through safe corridors between threat zones."
   else
     msg = msg .. "│\n"
@@ -4208,8 +4355,8 @@ function BOMBER_MISSION:_BuildSAMThreatReport(threats, isBlocking, corridorsAppl
     msg = msg .. "\n"
     msg = msg .. "CAUTION:\n"
     msg = msg .. "• Flying through contested airspace\n"
-    msg = msg .. "• SEAD support recommended\n"
-    msg = msg .. "• Mission will abort if SAMs achieve radar lock\n"
+    msg = msg .. string.format("• %s escort recommended\n", seadTerm:upper())
+    msg = msg .. string.format("• Mission will abort if %s detected\n", radarTerm)
   end
   
   return msg
@@ -4296,10 +4443,11 @@ function BOMBER_MISSION:_CreatePlayerMenu()
     function() self:_PlayerRecommendAbort() end
   )
   
-  -- SAM warning
+  -- Threat warning (SAM or FLAK based on era)
+  local threatTerm = (self.BomberType == "B-17G" or self.BomberType == "B-24J") and "FLAK" or "SAM"
   MENU_COALITION_COMMAND:New(
     self.Coalition,
-    "Warn: SAM Threat",
+    "Warn: " .. threatTerm .. " Threat",
     self.PlayerMenu,
     function() self:_PlayerWarnSAM() end
   )
@@ -4383,7 +4531,8 @@ end
 -- @param #BOMBER_MISSION self
 function BOMBER_MISSION:_PlayerWarnSAM()
   if self.Bomber and self.Bomber:IsAlive() then
-    self.Bomber:_BroadcastMessage(string.format("%s: Copy SAM warning. Deploying countermeasures.", self.Callsign))
+    local threatTerm = self.Bomber.IsWWIIBomber and "FLAK" or "SAM"
+    self.Bomber:_BroadcastMessage(string.format("%s: Copy %s warning. Deploying countermeasures.", self.Callsign, threatTerm))
     -- TODO: Deploy flares/chaff
   end
 end
@@ -4923,6 +5072,9 @@ function BOMBER:New(templateName, missionData)
     BOMBER_LOGGER:Error("SPAWN", "ERROR: Unknown bomber type %s", tostring(missionData.BomberType))
     return nil
   end
+
+  -- Determine if this is a WWII-era bomber for appropriate messaging
+  self.IsWWIIBomber = (missionData.BomberType == "B-17G" or missionData.BomberType == "B-24J")
 
   -- Mission properties
   self.Coalition = missionData.Coalition or coalition.side.BLUE
@@ -8282,6 +8434,10 @@ function BOMBER:_ProcessSAMRangeWarning(threatData)
   local canEngage = threatData.CanEngage
   local bomberAlt = threatData.BomberAlt or 0
   
+  -- Use appropriate terminology based on era
+  local threatPrefix = self.IsWWIIBomber and "FLAK" or "SAM"
+  local threatName = self.IsWWIIBomber and (samType:gsub("SAM", "FLAK")) or samType
+  
   -- Initialize SAM warning tracking
   if not self.SAMWarningRanges then
     self.SAMWarningRanges = {}
@@ -8305,32 +8461,32 @@ function BOMBER:_ProcessSAMRangeWarning(threatData)
       
       if threshold >= 50000 then
         severity = "DETECTED"
-        message = string.format("%s: [SAM] %s - %s bearing %03d°, %d nm", 
-          self.Callsign, samType, severity, bearing, distanceNm)
+        message = string.format("%s: [%s] %s - %s bearing %03d°, %d nm", 
+          self.Callsign, threatPrefix, threatName, severity, bearing, distanceNm)
       elseif threshold >= 40000 then
         severity = threatLevel
         if canEngage then
-          message = string.format("%s: [SAM] %s (%s threat) bearing %03d°, %d nm - %s at %.0fft!", 
-            self.Callsign, samType, severity, bearing, distanceNm, engageStatus, bomberAlt)
+          message = string.format("%s: [%s] %s (%s threat) bearing %03d°, %d nm - %s at %.0fft!", 
+            self.Callsign, threatPrefix, threatName, severity, bearing, distanceNm, engageStatus, bomberAlt)
         else
-          message = string.format("%s: [SAM] %s bearing %03d°, %d nm - %s", 
-            self.Callsign, samType, bearing, distanceNm, engageStatus)
+          message = string.format("%s: [%s] %s bearing %03d°, %d nm - %s", 
+            self.Callsign, threatPrefix, threatName, bearing, distanceNm, engageStatus)
         end
       elseif threshold >= 30000 then
         if canEngage then
-          message = string.format("%s: [SAM] %s (%s) bearing %03d°, %d nm - DANGER ZONE! Deploying countermeasures!", 
-            self.Callsign, samType, threatLevel, bearing, distanceNm)
+          message = string.format("%s: [%s] %s (%s) bearing %03d°, %d nm - DANGER ZONE! Deploying countermeasures!", 
+            self.Callsign, threatPrefix, threatName, threatLevel, bearing, distanceNm)
         else
-          message = string.format("%s: [SAM] %s bearing %03d°, %d nm - close but %s at %.0fft", 
-            self.Callsign, samType, bearing, distanceNm, engageStatus, bomberAlt)
+          message = string.format("%s: [%s] %s bearing %03d°, %d nm - close but %s at %.0fft", 
+            self.Callsign, threatPrefix, threatName, bearing, distanceNm, engageStatus, bomberAlt)
         end
       else -- 20km or less
         if canEngage then
           message = string.format("%s: [!] %s (%s THREAT!) bearing %03d°, %d nm - TRACKING!", 
-            self.Callsign, samType, threatLevel, bearing, distanceNm)
+            self.Callsign, threatPrefix, threatName, threatLevel, bearing, distanceNm)
         else
           message = string.format("%s: %s bearing %03d°, %d nm - %s at %.0fft", 
-            self.Callsign, samType, bearing, distanceNm, engageStatus, bomberAlt)
+            self.Callsign, threatPrefix, threatName, bearing, distanceNm, engageStatus, bomberAlt)
         end
       end
       
@@ -8360,6 +8516,9 @@ function BOMBER:_UpdateSAMStatusSummary()
     self.SAMCountermeasuresActive = false
     return
   end
+  
+  -- Use appropriate terminology based on era
+  local statusPrefix = self.IsWWIIBomber and "FLAK STATUS" or "SAM STATUS"
   
   -- Find closest and most dangerous threats
   local closest = nil
@@ -8399,18 +8558,24 @@ function BOMBER:_UpdateSAMStatusSummary()
     local canEngage = primaryThreat.CanEngage
     local bomberAlt = primaryThreat.BomberAlt or 0
     
+    -- Use appropriate terminology
+    local threatName = self.IsWWIIBomber and (samType:gsub("SAM", "FLAK")) or samType
+    
     if canEngage then
-      self:_BroadcastMessage(string.format("%s: [SAM STATUS] %s (%s) - %03d° @ %d nm - CAN ENGAGE at %.0fft", 
-        self.Callsign, samType, threatLevel, bearing, distanceNm, bomberAlt))
+      self:_BroadcastMessage(string.format("%s: [%s] %s (%s) - %03d° @ %d nm - CAN ENGAGE at %.0fft", 
+        self.Callsign, statusPrefix, threatName, threatLevel, bearing, distanceNm, bomberAlt))
     else
-      self:_BroadcastMessage(string.format("%s: [SAM STATUS] %s - %03d° @ %d nm (safe at %.0fft)", 
-        self.Callsign, samType, bearing, distanceNm, bomberAlt))
+      self:_BroadcastMessage(string.format("%s: [%s] %s - %03d° @ %d nm (safe at %.0fft)", 
+        self.Callsign, statusPrefix, threatName, bearing, distanceNm, bomberAlt))
     end
   elseif threatCount > 1 and primaryThreat then
     local closestNm = math.floor(closestDist / 1852)
     local closestBearing = closest and closest.Bearing and math.floor(closest.Bearing) or 0
     local primaryType = primaryThreat.SAMType or "Unknown"
     local canEngage = primaryThreat.CanEngage
+    
+    -- Use appropriate terminology
+    local threatName = self.IsWWIIBomber and (primaryType:gsub("SAM", "FLAK")) or primaryType
     
     -- Count how many can actually engage
     local engageCount = 0
@@ -8421,11 +8586,11 @@ function BOMBER:_UpdateSAMStatusSummary()
     end
     
     if engageCount > 0 then
-      self:_BroadcastMessage(string.format("%s: [SAM STATUS] %d sites (%d CAN ENGAGE) - Priority: %s @ %03d°", 
-        self.Callsign, threatCount, engageCount, primaryType, closestBearing))
+      self:_BroadcastMessage(string.format("%s: [%s] %d sites (%d CAN ENGAGE) - Priority: %s @ %03d°", 
+        self.Callsign, statusPrefix, threatCount, engageCount, threatName, closestBearing))
     else
-      self:_BroadcastMessage(string.format("%s: [SAM STATUS] %d sites detected - closest: %03d° @ %d nm (all outside envelope)", 
-        self.Callsign, threatCount, closestBearing, closestNm))
+      self:_BroadcastMessage(string.format("%s: [%s] %d sites detected - closest: %03d° @ %d nm (all outside envelope)", 
+        self.Callsign, statusPrefix, threatCount, closestBearing, closestNm))
     end
   end
 end
@@ -8776,7 +8941,7 @@ function BOMBER:onenterHolding()
   
   local maxWaitMins = math.floor(self.MaxHoldingTime / 60)
   local airbaseName = self.StartAirbase or "departure point"
-  self:_BroadcastMessage(string.format("%s: [AC] On ramp at %s, engines running. Waiting for fighter escort within 1km (%d min max).", 
+  self:_BroadcastMessage(string.format("%s: [AC] On ramp at %s, Waiting for fighter escort to taxi within 1km (%d min max).", 
     self.Callsign, airbaseName, maxWaitMins))
   
   local movingSpeedThreshold = (BOMBER_ESCORT_CONFIG and BOMBER_ESCORT_CONFIG.EscortTaxiSpeedThreshold) or 12
